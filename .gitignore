@@ -14,7 +14,8 @@ __pycache__/
 # data and generated outputs
 data/
 reports/
-report/
+
+notebooks/archive/
 
 # app generated files
 *.html
