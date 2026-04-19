@@ -1,0 +1,25 @@
+# local environment
+.env
+.env.*
+!.env.example
+.gp/
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# data and generated outputs
+data/
+reports/
+report/
+
+# app generated files
+*.html
+*.log
+
+# editor
+.vscode/
+GraduationProject.code-workspace
