@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .gp/
+.log/
 .venv/
 venv/
 
@@ -24,3 +25,5 @@ notebooks/archive/
 # editor
 .vscode/
 GraduationProject.code-workspace
+
+misc/
