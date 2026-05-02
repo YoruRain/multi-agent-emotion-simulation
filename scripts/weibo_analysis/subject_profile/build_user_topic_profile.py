@@ -55,7 +55,7 @@ OUTPUT_COLUMNS = [
     "top_all_topics",
     "top_categories",
     "top_implicit_topic_labels",
-    "top_final_topic_categories",
+    # "top_final_topic_categories",
     "final_category_distribution",
     "public_issue_topic_ratio",
     "final_public_issue_topic_ratio",
@@ -72,11 +72,18 @@ OUTPUT_COLUMNS = [
     "final_topic_profile_reliability",
     "avg_signal_confidence",
     "avg_final_topic_confidence",
+    "topic_summary",
+    "topic_summary_quality",
 ]
 
 PUBLIC_ISSUE_CATEGORIES = {"社会公共事件", "政策民生", "时事政治"}
 ENTERTAINMENT_CATEGORIES = {"娱乐文化", "游戏动漫", "体育竞技"}
 DAILY_LIFE_CATEGORIES = {"日常生活", "数码科技"}
+MEDIA_OFFICIAL_CATEGORY = "媒体官方"
+LOW_QUALITY_TOPIC_SUMMARY = (
+    "该用户历史微博中可识别主题信号较少，仅能粗略判断其关注方向；"
+    "当前主题画像可靠性较低，不宜在 Agent 建模中过度依赖。"
+)
 
 
 def configure_logging(verbose: bool = False, log_dir: Path = DEFAULT_LOG_DIR, log_file: Path | None = None) -> Path:
@@ -196,7 +203,7 @@ def parse_single_value_as_list(value: Any) -> list[str]:
     return [item] if item else []
 
 
-def count_top_items(list_series: pd.Series, denominator: int, top_n: int | None = 10) -> str | None:
+def get_top_items(list_series: pd.Series, denominator: int, top_n: int | None = 10) -> list[tuple[str, int, float]]:
     counter: Counter[str] = Counter()
     for values in list_series:
         if not values:
@@ -204,14 +211,19 @@ def count_top_items(list_series: pd.Series, denominator: int, top_n: int | None 
         counter.update(dedupe_preserve_order(values))
 
     if not counter:
-        return None
+        return []
 
     top_items: list[tuple[str, int, float]] = []
     most_common_items = counter.most_common(top_n) if top_n is not None else counter.most_common()
     for item, count in most_common_items:
         ratio = round(count / denominator, 4) if denominator > 0 else 0.0
         top_items.append((item, int(count), ratio))
-    return repr(top_items)
+    return top_items
+
+
+def count_top_items(list_series: pd.Series, denominator: int, top_n: int | None = 10) -> str | None:
+    top_items = get_top_items(list_series, denominator=denominator, top_n=top_n)
+    return repr(top_items) if top_items else None
 
 
 def safe_ratio(numerator: int, denominator: int) -> float:
@@ -248,6 +260,79 @@ def determine_final_topic_profile_reliability(
     if total_weibo_count >= 10 and final_topic_coverage >= 0.3:
         return "中可靠"
     return "低可靠"
+
+
+def determine_topic_summary_quality(final_topic_profile_reliability: str, final_topic_coverage: float) -> str:
+    if final_topic_profile_reliability == "高可靠" and final_topic_coverage >= 0.5:
+        return "高"
+    if final_topic_profile_reliability == "中可靠" or final_topic_coverage >= 0.3:
+        return "中"
+    return "低"
+
+
+def join_chinese_items(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]}和{items[1]}"
+    return f"{'、'.join(items[:-1])}和{items[-1]}"
+
+
+def select_main_categories(category_items: list[tuple[str, int, float]]) -> list[str]:
+    if not category_items:
+        return []
+
+    selected = [category for category, _count, ratio in category_items if ratio >= 0.10][:3]
+    if not selected:
+        selected = [category_items[0][0]]
+    return selected
+
+
+def select_fine_topics(implicit_topic_items: list[tuple[str, int, float]]) -> list[str]:
+    selected: list[str] = []
+    selected_set: set[str] = set()
+
+    for min_ratio in (0.03, None):
+        for topic, _count, ratio in implicit_topic_items:
+            if min_ratio is not None and ratio < min_ratio:
+                continue
+            if topic in selected_set:
+                continue
+            selected.append(topic)
+            selected_set.add(topic)
+            if len(selected) >= 3:
+                return selected
+    return selected
+
+
+def build_topic_summary(
+    topic_summary_quality: str,
+    category_items: list[tuple[str, int, float]],
+    fine_topics: list[str],
+) -> str:
+    if topic_summary_quality == "低":
+        return LOW_QUALITY_TOPIC_SUMMARY
+
+    main_categories = select_main_categories(category_items)
+    if not main_categories:
+        return "该用户历史微博中可识别主题信息不足，暂无法形成稳定主题摘要。"
+
+    has_media_official = MEDIA_OFFICIAL_CATEGORY in main_categories
+    non_media_categories = [category for category in main_categories if category != MEDIA_OFFICIAL_CATEGORY]
+    fine_topic_phrase = join_chinese_items(fine_topics)
+
+    if non_media_categories:
+        main_category_phrase = join_chinese_items(non_media_categories)
+        media_phrase = "，同时较多接触媒体/官方信息源" if has_media_official else ""
+        if fine_topic_phrase:
+            return f"该用户主要关注{main_category_phrase}话题{media_phrase}，常见细主题包括{fine_topic_phrase}。"
+        return f"该用户主要关注{main_category_phrase}话题{media_phrase}。"
+
+    if fine_topic_phrase:
+        return f"该用户较多接触媒体/官方信息源，常见细主题包括{fine_topic_phrase}。"
+    return "该用户较多接触媒体/官方信息源。"
 
 
 def build_user_topic_profile(df: pd.DataFrame) -> pd.DataFrame:
@@ -318,6 +403,51 @@ def build_user_topic_profile(df: pd.DataFrame) -> pd.DataFrame:
         )
         original_group = group[~group["is_repost"]]
         repost_group = group[group["is_repost"]]
+        user_topic_items = get_top_items(
+            original_group["user_topic_list"],
+            denominator=original_weibo_count,
+            top_n=10,
+        )
+        source_topic_items = get_top_items(
+            repost_group["source_topic_list"],
+            denominator=repost_weibo_count,
+            top_n=10,
+        )
+        all_topic_items = get_top_items(
+            group["all_topic_list"],
+            denominator=total_weibo_count,
+            top_n=10,
+        )
+        category_items = get_top_items(
+            group["category_list"],
+            denominator=total_weibo_count,
+            top_n=10,
+        )
+        implicit_topic_items = get_top_items(
+            group["implicit_topic_label_list"],
+            denominator=total_weibo_count,
+            top_n=10,
+        )
+        final_category_items = get_top_items(
+            group["final_category_list"],
+            denominator=total_weibo_count,
+            top_n=None,
+        )
+        final_topic_profile_reliability = determine_final_topic_profile_reliability(
+            total_weibo_count,
+            final_topic_coverage,
+            avg_final_topic_confidence,
+        )
+        topic_summary_quality = determine_topic_summary_quality(
+            final_topic_profile_reliability,
+            final_topic_coverage,
+        )
+        fine_topics = select_fine_topics(implicit_topic_items)
+        topic_summary = build_topic_summary(
+            topic_summary_quality,
+            final_category_items,
+            fine_topics,
+        )
 
         rows.append(
             {
@@ -325,41 +455,17 @@ def build_user_topic_profile(df: pd.DataFrame) -> pd.DataFrame:
                 "total_weibo_count": total_weibo_count,
                 "repost_weibo_count": repost_weibo_count,
                 "original_weibo_count": original_weibo_count,
-                "top_user_topics": count_top_items(
-                    original_group["user_topic_list"],
-                    denominator=original_weibo_count,
-                    top_n=10,
-                ),
-                "top_source_topics": count_top_items(
-                    repost_group["source_topic_list"],
-                    denominator=repost_weibo_count,
-                    top_n=10,
-                ),
-                "top_all_topics": count_top_items(
-                    group["all_topic_list"],
-                    denominator=total_weibo_count,
-                    top_n=10,
-                ),
-                "top_categories": count_top_items(
-                    group["category_list"],
-                    denominator=total_weibo_count,
-                    top_n=10,
-                ),
-                "top_implicit_topic_labels": count_top_items(
-                    group["implicit_topic_label_list"],
-                    denominator=total_weibo_count,
-                    top_n=10,
-                ),
-                "top_final_topic_categories": count_top_items(
-                    group["final_category_list"],
-                    denominator=total_weibo_count,
-                    top_n=10,
-                ),
-                "final_category_distribution": count_top_items(
-                    group["final_category_list"],
-                    denominator=total_weibo_count,
-                    top_n=None,
-                ),
+                "top_user_topics": repr(user_topic_items) if user_topic_items else None,
+                "top_source_topics": repr(source_topic_items) if source_topic_items else None,
+                "top_all_topics": repr(all_topic_items) if all_topic_items else None,
+                "top_categories": repr(category_items) if category_items else None,
+                "top_implicit_topic_labels": repr(implicit_topic_items) if implicit_topic_items else None,
+                # "top_final_topic_categories": count_top_items(
+                #     group["final_category_list"],
+                #     denominator=total_weibo_count,
+                #     top_n=10,
+                # ),
+                "final_category_distribution": repr(final_category_items) if final_category_items else None,
                 "public_issue_topic_ratio": safe_ratio(public_issue_count, total_weibo_count),
                 "final_public_issue_topic_ratio": safe_ratio(final_public_issue_count, total_weibo_count),
                 "entertainment_topic_ratio": safe_ratio(entertainment_count, total_weibo_count),
@@ -375,13 +481,11 @@ def build_user_topic_profile(df: pd.DataFrame) -> pd.DataFrame:
                     total_weibo_count,
                     explicit_topic_coverage,
                 ),
-                "final_topic_profile_reliability": determine_final_topic_profile_reliability(
-                    total_weibo_count,
-                    final_topic_coverage,
-                    avg_final_topic_confidence,
-                ),
+                "final_topic_profile_reliability": final_topic_profile_reliability,
                 "avg_signal_confidence": avg_signal_confidence,
                 "avg_final_topic_confidence": avg_final_topic_confidence,
+                "topic_summary": topic_summary,
+                "topic_summary_quality": topic_summary_quality,
             }
         )
 
@@ -413,6 +517,12 @@ def validate_profile_df(profile_df: pd.DataFrame, expected_user_count: int) -> N
     for column in ratio_columns:
         if not profile_df[column].between(0.0, 1.0, inclusive="both").all():
             raise AssertionError(f"{column} contains values outside [0, 1]")
+
+    invalid_quality = ~profile_df["topic_summary_quality"].isin({"高", "中", "低"})
+    if invalid_quality.any():
+        raise AssertionError("topic_summary_quality contains invalid values")
+    if profile_df["topic_summary"].isna().any():
+        raise AssertionError("topic_summary contains missing values")
 
 
 def save_outputs(profile_df: pd.DataFrame, output_path: Path) -> None:
@@ -466,6 +576,10 @@ def log_summary(input_df: pd.DataFrame, profile_df: pd.DataFrame) -> None:
         "final_topic_profile_reliability value_counts:\n%s",
         profile_df["final_topic_profile_reliability"].value_counts(dropna=False).to_string(),
     )
+    LOGGER.info(
+        "topic_summary_quality value_counts:\n%s",
+        profile_df["topic_summary_quality"].value_counts(dropna=False).to_string(),
+    )
     LOGGER.info("top_user_topics 为空的用户数量: %d", int(profile_df["top_user_topics"].isna().sum()))
     LOGGER.info("top_source_topics 为空的用户数量: %d", int(profile_df["top_source_topics"].isna().sum()))
     LOGGER.info("top_all_topics 为空的用户数量: %d", int(profile_df["top_all_topics"].isna().sum()))
@@ -474,10 +588,10 @@ def log_summary(input_df: pd.DataFrame, profile_df: pd.DataFrame) -> None:
         "top_implicit_topic_labels 为空的用户数量: %d",
         int(profile_df["top_implicit_topic_labels"].isna().sum()),
     )
-    LOGGER.info(
-        "top_final_topic_categories 为空的用户数量: %d",
-        int(profile_df["top_final_topic_categories"].isna().sum()),
-    )
+    # LOGGER.info(
+    #     "top_final_topic_categories 为空的用户数量: %d",
+    #     int(profile_df["top_final_topic_categories"].isna().sum()),
+    # )
     LOGGER.info(
         "final_category_distribution 为空的用户数量: %d",
         int(profile_df["final_category_distribution"].isna().sum()),
