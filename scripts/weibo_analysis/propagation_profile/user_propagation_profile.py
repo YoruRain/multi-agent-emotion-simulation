@@ -67,6 +67,7 @@ OUTPUT_COLUMNS = [
     "influence_score",
     "influence_level",
     "propagation_role",
+    "propagation_summary",
 ]
 RATIO_COLUMNS = [
     "original_ratio",
@@ -156,14 +157,14 @@ def assign_level_by_quantile(series: pd.Series) -> pd.Series:
     q33 = numeric.quantile(0.33)
     q67 = numeric.quantile(0.67)
     if pd.isna(q33) or pd.isna(q67):
-        return pd.Series("low", index=series.index, dtype="object")
+        return pd.Series("低", index=series.index, dtype="object")
     if q33 == q67:
-        fallback = "low" if q33 <= 0 else "medium"
+        fallback = "低" if q33 <= 0 else "中"
         return pd.Series(fallback, index=series.index, dtype="object")
 
-    labels = pd.Series("medium", index=series.index, dtype="object")
-    labels.loc[numeric <= q33] = "low"
-    labels.loc[numeric >= q67] = "high"
+    labels = pd.Series("中", index=series.index, dtype="object")
+    labels.loc[numeric <= q33] = "低"
+    labels.loc[numeric >= q67] = "高"
     return labels
 
 
@@ -207,7 +208,7 @@ def build_propagation_roles(
     high_engagement_q75: float,
 ) -> str:
     roles: list[str] = []
-    if row["propagation_activity_level"] == "low":
+    if row["propagation_activity_level"] == "低":
         roles.append("低活跃观察者")
     if row["original_ratio"] >= 0.6:
         roles.append("原创表达者")
@@ -219,10 +220,85 @@ def build_propagation_roles(
         roles.append("媒体信息跟随者")
     if row["kol_sensitivity_score"] >= kol_q75:
         roles.append("KOL 敏感型用户")
-    # 对照旧规则：row["influence_score"] >= influence_q85 and row["propagation_activity_level"] != "low"
+    # 对照旧规则：row["influence_score"] >= influence_q85 and row["propagation_activity_level"] != "低"
     if row["influence_score"] >= influence_q85 and row["high_engagement_weibo_ratio"] >= high_engagement_q75:
         roles.append("潜在影响者")
     return ",".join(roles) if roles else "普通参与者"
+
+
+def describe_expression_tendency(row: pd.Series) -> str:
+    original_ratio = row["original_ratio"]
+    repost_ratio = row["repost_ratio"]
+    repost_comment_ratio = row["repost_with_comment_ratio"]
+
+    if original_ratio >= 0.75:
+        return "明显偏原创表达"
+    if repost_ratio >= 0.75 and repost_comment_ratio >= 0.50:
+        return "偏转发扩散，并常在转发时附加内容"
+    if repost_ratio >= 0.75:
+        return "明显偏转发扩散"
+    if repost_comment_ratio >= 0.50:
+        return "转发时较常附加个人内容"
+    return "原创与转发倾向相对均衡"
+
+
+def describe_source_preference(row: pd.Series, kol_threshold: float) -> str:
+    media = row["media_dependency_score"]
+    kol = row["kol_sensitivity_score"]
+
+    if media >= 0.50 and kol >= kol_threshold:
+        return "信息来源同时偏向媒体机构与高影响力个人账号"
+    if media >= 0.50:
+        return "信息来源较依赖媒体、政府或机构账号"
+    if kol >= kol_threshold:
+        return "信息来源较偏向高影响力个人账号"
+    if media < 0.20 and kol < kol_threshold * 0.5:
+        return "对特定信息源依赖不明显"
+    return "信息来源偏好中等"
+
+
+def infer_main_role(role_text: str) -> str:
+    roles = {role for role in str(role_text).split(",") if role}
+
+    if "低活跃观察者" in roles and "潜在影响者" not in roles:
+        return "更适合作为低频响应或围观型节点"
+    if "潜在影响者" in roles:
+        return "可作为潜在意见传播节点"
+    if "媒体信息跟随者" in roles:
+        return "更容易响应组织化信息源"
+    if "KOL 敏感型用户" in roles:
+        return "更容易受高影响力个人账号带动"
+    if "转发评论者" in roles:
+        return "更适合作为转发并附加态度的扩散节点"
+    if "转发扩散者" in roles:
+        return "更适合作为信息扩散节点"
+    if "原创表达者" in roles:
+        return "更适合作为原创表达型节点"
+    return "更适合作为普通参与节点"
+
+
+def build_propagation_summary(row: pd.Series, kol_threshold: float) -> str:
+    activity_desc = {
+        "低": "活跃度较低",
+        "中": "活跃度中等",
+        "高": "活跃度较高",
+    }.get(row.get("propagation_activity_level"), "活跃度一般")
+
+    expression_desc = describe_expression_tendency(row)
+    source_desc = describe_source_preference(row, kol_threshold)
+
+    role_text = str(row.get("propagation_role", ""))
+    if "潜在影响者" in role_text:
+        influence_desc = "具备一定潜在传播影响力"
+    else:
+        influence_desc = {
+            "低": "自身传播影响力较低",
+            "中": "自身传播影响力中等",
+            "高": "自身传播影响力较高",
+        }.get(row.get("influence_level"), "自身传播影响力一般")
+
+    main_role_desc = infer_main_role(role_text)
+    return f"该用户{activity_desc}，{expression_desc}，{source_desc}，{influence_desc}，{main_role_desc}。"
 
 
 def divide_or_zero(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
@@ -470,6 +546,11 @@ def build_user_propagation_profile(
         kol_q75=kol_q75,
         high_engagement_q75=high_engagement_q75,
     )
+    profile["propagation_summary"] = profile.apply(
+        build_propagation_summary,
+        axis=1,
+        kol_threshold=kol_q75,
+    )
 
     for column in RATIO_COLUMNS:
         profile[column] = pd.to_numeric(profile[column], errors="coerce").fillna(0.0).clip(0, 1)
@@ -500,7 +581,7 @@ def check_quality(df: pd.DataFrame, expected_user_count: int) -> None:
     if bad_ratio_columns:
         raise ValueError(f"Ratio columns outside [0, 1] or null: {bad_ratio_columns}")
 
-    for column in ["propagation_activity_level", "influence_level", "propagation_role"]:
+    for column in ["propagation_activity_level", "influence_level", "propagation_role", "propagation_summary"]:
         if df[column].isna().any() or df[column].astype(str).str.strip().eq("").any():
             raise ValueError(f"{column} contains empty values")
 
