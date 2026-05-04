@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -134,9 +135,31 @@ TOPIC_KEYWORDS: dict[str, list[str]] = {
         "科技", "数码", "iPhone", "iphone", "华为", 
         "小米", "鸿蒙", "AI", "人工智能", "芯片", "机器人", 
         "智能驾驶", "辅助驾驶", "新能源车", "充电", "电池", 
-        "续航", "激光雷达", "云计算"
+        "续航", "激光雷达", "云计算", "大V聊车"
     ]
 }
+
+LOW_INFORMATION_PATTERNS = [
+    (
+        re.compile(
+            r"^\s*("
+            r"[转轉][发發]?(至?微博)?|"
+            r"Repost|"
+            r"[存码马](住|下|克)?|"
+            r"转一个|必须转|"
+            r"签到|"
+            r"收藏(了)?"
+            r")\s*$",
+            re.IGNORECASE,
+        ),
+        "占位/功能互动",
+    ),
+    (re.compile(r"^#[^#]+#(\s*#[^#]+#)*$"), "纯话题占位"),
+    (re.compile(r"^\d+$"), "纯数字"),
+    (re.compile(r"^[^\w\u4e00-\u9fff\U00010000-\U0010FFFF]+$"), "纯符号"),
+    (re.compile(r"^[a-zA-Z]+$"), "纯英文字母"),
+    (re.compile(r"^(@[^\s@]+\s*)+$"), "纯@用户"),
+]
 
 
 def configure_logging(verbose: bool = False, log_dir: Path = DEFAULT_LOG_DIR, log_file: Path | None = None) -> Path:
@@ -224,19 +247,38 @@ def build_source_lookup(df_all: pd.DataFrame) -> pd.DataFrame:
     return lookup
 
 
+def is_low_information_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    return any(pattern.fullmatch(stripped) for pattern, _ in LOW_INFORMATION_PATTERNS)
+
+
+def extract_repost_comment(text: str | None) -> str:
+    if text is None or pd.isna(text):
+        return ""
+    comment = str(text).split("//", 1)[0].strip()
+    if is_low_information_text(comment):
+        return ""
+    return comment
+
+
+def has_valid_repost_id(value: Any) -> bool:
+    numeric = pd.to_numeric(value, errors="coerce")
+    return not pd.isna(numeric) and numeric != -1
+
+
 def determine_has_repost_comment(row: pd.Series) -> bool:
     if not bool(row["is_repost"]):
         return False
+    if not has_valid_repost_id(row["reposted_weibo_id"]):
+        return False
 
     text_quality = pd.to_numeric(row["text_quality"], errors="coerce")
-    if pd.isna(text_quality) or float(text_quality) < 3:
+    if pd.isna(text_quality) or float(text_quality) != 3.0:
         return False
 
-    content = normalize_text(row["content"])
-    if content.startswith("//"):
-        return False
-
-    return True
+    return extract_repost_comment(row["content"]) != ""
 
 
 def build_match_text(content: str, source_content: str, is_repost: bool, has_repost_comment: bool) -> str:
