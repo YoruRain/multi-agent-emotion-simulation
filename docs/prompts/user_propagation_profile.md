@@ -60,6 +60,7 @@
 `source_institution_ratio`  
 `source_personal_verified_ratio`  
 `source_high_follower_ratio`  
+`high_personal_verified_ratio`  
 `media_dependency_score`  
 `kol_sensitivity_score`  
 `avg_engagement`  
@@ -227,6 +228,10 @@
 
 `source_high_follower_ratio = 高粉源账号转发数 / 成功连接源作者信息的有效转发数`
 
+同时计算高粉且个人认证的源账号转发占比：
+
+`high_personal_verified_ratio = 高粉且个人认证的源账号转发数 / 成功连接源作者信息的有效转发数`
+
 若分母为 0，则设为 0。
 
 ### 7. 计算媒体依赖度与 KOL 敏感度
@@ -247,7 +252,7 @@
 
 建议公式：
 
-`kol_sensitivity_score = 0.5 * source_personal_verified_ratio + 0.5 * source_high_follower_ratio`
+`kol_sensitivity_score = 0.7 * high_personal_verified_ratio + 0.3 * source_high_follower_ratio`
 
 然后将结果裁剪到 `[0, 1]` 区间。
 
@@ -349,10 +354,10 @@
 
 - 若 `propagation_activity_level == 'low'`，加入 `低活跃观察者`
 - 若 `original_ratio >= 0.6`，加入 `原创表达者`
-- 若 `repost_ratio >= 0.6`，加入 `转发扩散者`
-- 若 `repost_with_comment_ratio >= 0.4`，加入 `转发评论者`
+- 若 `repost_ratio >= 0.75`，加入 `转发扩散者`
+- 若 `repost_with_comment_ratio >= 0.5`，加入 `转发评论者`
 - 若 `media_dependency_score >= 0.5`，加入 `媒体信息跟随者`
-- 若 `kol_sensitivity_score >= 0.5`，加入 `KOL 敏感型用户`
+- 若 `kol_sensitivity_score >= q75`，加入 `KOL 敏感型用户`，其中 `q75` 为全部用户 `kol_sensitivity_score` 的 75% 分位数
 - 若 `influence_level == 'high'`，加入 `潜在影响者`
 - 如果没有命中任何标签，则设为 `普通参与者`
 
@@ -376,6 +381,7 @@
 `source_institution_ratio`  
 `source_personal_verified_ratio`  
 `source_high_follower_ratio`  
+`high_personal_verified_ratio`  
 `media_dependency_score`  
 `kol_sensitivity_score`  
 `avg_engagement`  
@@ -446,6 +452,7 @@
 `source_institution_ratio`  
 `source_personal_verified_ratio`  
 `source_high_follower_ratio`  
+`high_personal_verified_ratio`  
 `media_dependency_score`  
 `kol_sensitivity_score`  
 `high_engagement_weibo_ratio`  
