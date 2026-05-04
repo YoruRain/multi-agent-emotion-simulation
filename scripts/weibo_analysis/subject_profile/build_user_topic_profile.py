@@ -63,6 +63,7 @@ OUTPUT_COLUMNS = [
     "final_entertainment_topic_ratio",
     "daily_life_topic_ratio",
     "final_daily_life_topic_ratio",
+    "marketing_topic_ratio",
     "repost_topic_dependency",
     "explicit_topic_coverage",
     "implicit_valid_topic_coverage",
@@ -357,6 +358,7 @@ def build_user_topic_profile(df: pd.DataFrame) -> pd.DataFrame:
         "implicit_topic_label_list",
     ].map(lambda _: [])
     working["final_category_list"] = working["final_topic_categories"].map(parse_categories)
+    working["final_topic_label_list"] = working["final_topic_labels"].map(parse_multi_value)
 
     rows: list[dict[str, Any]] = []
     for user_id, group in working.groupby("user_id", sort=True):
@@ -388,6 +390,9 @@ def build_user_topic_profile(df: pd.DataFrame) -> pd.DataFrame:
         )
         final_daily_life_count = int(
             group["final_category_list"].map(lambda items: any(item in DAILY_LIFE_CATEGORIES for item in items)).sum()
+        )
+        marketing_topic_count = int(
+            group["final_topic_label_list"].map(lambda items: "广告营销" in items).sum()
         )
 
         repost_topic_dependency = safe_ratio(
@@ -472,6 +477,7 @@ def build_user_topic_profile(df: pd.DataFrame) -> pd.DataFrame:
                 "final_entertainment_topic_ratio": safe_ratio(final_entertainment_count, total_weibo_count),
                 "daily_life_topic_ratio": safe_ratio(daily_life_count, total_weibo_count),
                 "final_daily_life_topic_ratio": safe_ratio(final_daily_life_count, total_weibo_count),
+                "marketing_topic_ratio": safe_ratio(marketing_topic_count, total_weibo_count),
                 "repost_topic_dependency": repost_topic_dependency,
                 "explicit_topic_coverage": explicit_topic_coverage,
                 "implicit_valid_topic_coverage": implicit_valid_topic_coverage,
@@ -507,6 +513,7 @@ def validate_profile_df(profile_df: pd.DataFrame, expected_user_count: int) -> N
         "final_public_issue_topic_ratio",
         "final_entertainment_topic_ratio",
         "final_daily_life_topic_ratio",
+        "marketing_topic_ratio",
         "repost_topic_dependency",
         "explicit_topic_coverage",
         "implicit_valid_topic_coverage",
@@ -551,6 +558,10 @@ def log_summary(input_df: pd.DataFrame, profile_df: pd.DataFrame) -> None:
     LOGGER.info(
         "daily_life_topic_ratio describe:\n%s",
         profile_df["daily_life_topic_ratio"].describe().to_string(),
+    )
+    LOGGER.info(
+        "marketing_topic_ratio describe:\n%s",
+        profile_df["marketing_topic_ratio"].describe().to_string(),
     )
     LOGGER.info(
         "repost_topic_dependency describe:\n%s",
