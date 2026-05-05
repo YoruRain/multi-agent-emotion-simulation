@@ -50,6 +50,7 @@ OUTPUT_COLUMNS = [
     "user_id",
     "weibo_hq_count",
     "active_days",
+    "follower_level",
     "propagation_activity_level",
     "original_ratio",
     "repost_ratio",
@@ -479,6 +480,7 @@ def build_user_propagation_profile(
     base = user_info[["user_id", "weibo_hq_count", "active_days", "original_ratio", "follower_count", "verified", "user_rank"]].copy()
     base["weibo_hq_count"] = base["weibo_hq_count"].fillna(0.0)
     base["active_days"] = base["active_days"].fillna(0.0)
+    base["follower_level"] = assign_level_by_quantile(safe_log1p(base["follower_count"]))
 
     repost_stats = build_user_repost_stats(user_weibo)
     source_stats, valid_repost_records, source_weibo_matched_records, source_creator_matched_records = (
@@ -581,7 +583,13 @@ def check_quality(df: pd.DataFrame, expected_user_count: int) -> None:
     if bad_ratio_columns:
         raise ValueError(f"Ratio columns outside [0, 1] or null: {bad_ratio_columns}")
 
-    for column in ["propagation_activity_level", "influence_level", "propagation_role", "propagation_summary"]:
+    for column in [
+        "follower_level",
+        "propagation_activity_level",
+        "influence_level",
+        "propagation_role",
+        "propagation_summary",
+    ]:
         if df[column].isna().any() or df[column].astype(str).str.strip().eq("").any():
             raise ValueError(f"{column} contains empty values")
 
@@ -597,6 +605,8 @@ def print_checks(
     print(f"有效转发记录数: {relation_checks['valid_repost_records']}")
     print(f"成功连接源微博的转发记录数: {relation_checks['source_weibo_matched_records']}")
     print(f"成功连接源作者信息的转发记录数: {relation_checks['source_creator_matched_records']}")
+    print("follower_level 分布:")
+    print(df_profile["follower_level"].value_counts(dropna=False).to_string())
     print("propagation_activity_level 分布:")
     print(df_profile["propagation_activity_level"].value_counts(dropna=False).to_string())
     print("influence_level 分布:")
