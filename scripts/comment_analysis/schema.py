@@ -92,6 +92,7 @@ target 抽取规则：
 6. 如果无法从评论原文中抽出明确对象，或目标对象只能依赖 topic 或 source_weibo_summary 推断，
    则优先将 target_explicit 设为 False，并将对应 target_text 设为空字符串 ""。
 7. 对依赖背景推断的隐含 target，应适当降低 confidence；若目标不稳，needs_more_context 应设为 true。
+8. target_text 应是最短可定位的评价对象片段。如果被评价对象是一个行为短语，抽取核心行为即可，不要复制整句。
 
 target 一致性规则：
 1. emotion_target 与 stance_target 可以不同，但只有在评论中确实存在两个不同评价对象时才允许不同。
@@ -138,6 +139,33 @@ confidence 判定参考：
 1. 评论中出现的人物、群体、说法，不一定自动构成 target。
 2. 若某人物/对象只是被用来举例、转述、引用或铺垫，而真正被评价的是更抽象的行为、事件、风险或观点，则应将真正被评价的对象作为 target。
 3. 不要仅因句中出现某个人物名词，就机械地将其判为 stance_target 或 emotion_target。
+
+emotion_label 判定规则：
+1. disapproval 不作为 emotion_label 使用。若评论主要表达不认可、反对或批评，应优先通过 stance_label=against、norm_violation、argument_type=evaluation 表达；emotion_label 应选择最接近的情绪，如 anger/disappointment/disgust，若没有明显情绪则使用 none。
+2. 若评论只是事实陈述，没有明显情绪表达，emotion_label 使用 none，emotion_intensity=0 或 1。
+
+evidence 必须来自当前 comment_text，不要从 parent_comment_text 或 source_weibo_summary 中摘取。
+父评论只能帮助理解指代和语境，不能作为当前评论情绪/立场 evidence。
+
+二级评论上下文使用规则：
+1. comment_text 是当前需要分析的评论，所有 emotion_evidence 和 stance_evidence 必须优先来自 comment_text。
+2. parent_comment_summary / parent_comment_text 仅作为理解回复关系、指代对象和语境的辅助信息。
+3. 不要把父评论作者的情绪或立场直接当成当前评论作者的情绪或立场。
+4. 若当前评论只是“同意”“确实”“笑死”“这也能洗”等短回复，应结合父评论判断其指向对象和立场。
+5. 若当前评论与父评论明显相反或带有反讽，应以当前评论的语气和表达为准。
+
+二级评论分析规则：
+1. comment_text 是当前需要分析的评论，父评论仅作为理解回复关系、指代对象和语境的辅助信息。
+2. 不要把父评论作者的情绪或立场直接继承为当前评论作者的情绪或立场。
+3. 当前评论可能是在同意、反驳、补充、讽刺、质疑父评论，必须先判断二者关系。
+4. 若当前评论只是“确实”“对”“笑死”“羡慕”等短回复，可结合父评论判断立场方向，但 confidence 应适当降低。
+
+二级评论 target 规则：
+1. target_text 优先从当前 comment_text 中抽取。
+2. 如果 target 只能从 parent_comment_text 中推断，target_explicit 应设为 False。
+3. 当 target_explicit=False 时，target_text 原则上保持为空字符串。
+4. 不要把当前评论中的“我/你/他”机械地作为 target；需要判断它是说话者、回复对象、被评价对象，还是仅用于指代。
+5. 若当前二级评论主要是在反驳、质疑或讽刺父评论中的某个观点，stance_target 应优先指向“父评论观点/主张/归因方式”，而不是直接指向话题主体。不要把“为某实体辩护”误判为“反对该实体”。
 
 
 必须严格遵守下面的 JSON Schema：
@@ -239,6 +267,9 @@ class TaskOutputLayer(BaseModel):
         "disgust",
         "disappointment",
         "surprise",
+        "sympathy",
+        "confusion",
+        "admiration",
         "none",
         "mixed",
         "unclear",

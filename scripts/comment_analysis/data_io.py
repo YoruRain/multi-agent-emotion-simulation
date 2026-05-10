@@ -38,12 +38,15 @@ ANALYSIS_FIELDS = [
     "stance_evidence",
     "needs_more_context",
     "low_confidence_reason",
+    "semantic_validation_warnings",
 ]
 
 BASE_OUTPUT_FIELDS = [
     "comment_id",
     "weibo_id",
+    "parent_id",
     "content",
+    "parent_comment_text",
     "analysis_context",
     "topic",
 ]
@@ -61,7 +64,9 @@ PARQUET_OUTPUT_FIELDS = BASE_OUTPUT_FIELDS + ANALYSIS_FIELDS + TRACKING_OUTPUT_F
 class CommentSample:
     comment_id: str
     weibo_id: str
+    parent_id: str
     content: str
+    parent_comment_text: str
     topic: str
     analysis_context: str
     row: dict[str, Any]
@@ -106,6 +111,10 @@ def is_high_quality_text(value: Any) -> bool:
     return as_clean_str(value) == "3"
 
 
+def comment_level_label(comment_level: str) -> str:
+    return "first-level" if comment_level == "first" else "second-level"
+
+
 def load_samples(config: AnalysisConfig, completed_ids: set[str]) -> tuple[list[CommentSample], int, int]:
     logging.info("Loading comments: %s", config.comment_path)
     logging.info("Loading topic weibos: %s", config.weibo_path)
@@ -124,15 +133,44 @@ def load_samples(config: AnalysisConfig, completed_ids: set[str]) -> tuple[list[
     )
 
     original_count = len(df_comment)
-    df_comment = df_comment[df_comment["parent_id"].apply(is_first_level_parent)].copy()
-    first_level_count = len(df_comment)
-    df_comment = df_comment[df_comment["text_quality"].apply(is_high_quality_text)].copy()
-    high_quality_first_level_count = len(df_comment)
     df_comment["comment_id"] = df_comment["comment_id"].map(as_clean_str)
     df_comment["weibo_id"] = df_comment["weibo_id"].map(as_clean_str)
+    df_comment["parent_id"] = df_comment["parent_id"].map(as_clean_str)
     df_comment["content"] = df_comment["content"].map(as_clean_str)
+
+    parent_lookup = (
+        df_comment[["comment_id", "content"]]
+        .drop_duplicates(subset=["comment_id"], keep="first")
+        .rename(columns={"comment_id": "parent_id", "content": "parent_comment_text"})
+    )
+
+    if config.comment_level == "first":
+        level_mask = df_comment["parent_id"].apply(is_first_level_parent)
+    else:
+        level_mask = ~df_comment["parent_id"].apply(is_first_level_parent)
+
+    df_comment = df_comment[level_mask].copy()
+    selected_comment_count = len(df_comment)
+    df_comment = df_comment[df_comment["text_quality"].apply(is_high_quality_text)].copy()
+    high_quality_selected_count = len(df_comment)
     df_comment = df_comment[df_comment["comment_id"].ne("") & df_comment["content"].ne("")]
     df_comment = df_comment.drop_duplicates(subset=["comment_id"], keep="first")
+
+    if config.comment_level == "first":
+        df_comment["parent_id"] = df_comment["parent_id"].where(
+            df_comment["parent_id"].ne(""),
+            "-1",
+        )
+        df_comment["parent_comment_text"] = ""
+    else:
+        df_comment = df_comment.merge(parent_lookup, on="parent_id", how="left")
+        df_comment["parent_comment_text"] = df_comment["parent_comment_text"].map(as_clean_str)
+        missing_parent_count = int(df_comment["parent_comment_text"].eq("").sum())
+        if missing_parent_count:
+            logging.warning(
+                "Second-level comments without matched parent comment text: %s",
+                missing_parent_count,
+            )
 
     df_weibo = df_weibo.copy()
     df_weibo["weibo_id"] = df_weibo["weibo_id"].map(as_clean_str)
@@ -164,19 +202,26 @@ def load_samples(config: AnalysisConfig, completed_ids: set[str]) -> tuple[list[
             CommentSample(
                 comment_id=as_clean_str(record.get("comment_id")),
                 weibo_id=as_clean_str(record.get("weibo_id")),
+                parent_id=as_clean_str(record.get("parent_id")),
                 content=as_clean_str(record.get("content")),
+                parent_comment_text=as_clean_str(record.get("parent_comment_text")),
                 topic=as_clean_str(record.get("topic")),
                 analysis_context=as_clean_str(record.get("analysis_context")),
                 row=record,
             )
         )
 
+    level_label = comment_level_label(config.comment_level)
     logging.info("Total comments: %s", original_count)
-    logging.info("First-level comments: %s", first_level_count)
-    logging.info("First-level comments with text_quality=3: %s", high_quality_first_level_count)
+    logging.info("Selected %s comments: %s", level_label, selected_comment_count)
+    logging.info(
+        "%s comments with text_quality=3: %s",
+        level_label,
+        high_quality_selected_count,
+    )
     logging.info("Already completed and skipped: %s", skipped_count)
     logging.info("Pending in this run: %s", len(samples))
-    return samples, first_level_count, skipped_count
+    return samples, selected_comment_count, skipped_count
 
 
 def model_dump(instance: Any) -> dict[str, Any]:
@@ -189,6 +234,21 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def validate_target_text_source(record: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    text = as_clean_str(record.get("content"))
+    role = record.get("role_layer") or {}
+
+    if role.get("target_explicit") is True:
+        for key in ["emotion_target_text", "stance_target_text"]:
+            target_text = as_clean_str(role.get(key))
+            if target_text and target_text not in text:
+                warnings.append(
+                    f"{key}={target_text!r} not found in comment_text while target_explicit=True"
+                )
+    return warnings
+
+
 def make_jsonl_record(
     sample: CommentSample,
     analysis: CommentAnalysis,
@@ -199,11 +259,21 @@ def make_jsonl_record(
     record: dict[str, Any] = {
         "comment_id": sample.comment_id,
         "weibo_id": sample.weibo_id,
+        "parent_id": sample.parent_id,
         "content": sample.content,
+        "parent_comment_text": sample.parent_comment_text,
         "analysis_context": sample.analysis_context,
         "topic": sample.topic,
     }
     record.update(analysis_data)
+    semantic_validation_warnings = validate_target_text_source(record)
+    if semantic_validation_warnings:
+        logging.warning(
+            "Semantic validation warnings for comment_id=%s: %s",
+            sample.comment_id,
+            "; ".join(semantic_validation_warnings),
+        )
+    record["semantic_validation_warnings"] = semantic_validation_warnings
     record["analysis_info"] = {
         "model_name": config.model,
         "analyzed_at": analyzed_at,
@@ -216,7 +286,9 @@ def flatten_analysis_record(record: dict[str, Any]) -> dict[str, Any]:
     flat: dict[str, Any] = {
         "comment_id": as_clean_str(record.get("comment_id")),
         "weibo_id": as_clean_str(record.get("weibo_id")),
+        "parent_id": as_clean_str(record.get("parent_id")) or "-1",
         "content": as_clean_str(record.get("content")),
+        "parent_comment_text": as_clean_str(record.get("parent_comment_text")),
         "analysis_context": as_clean_str(record.get("analysis_context")),
     }
 
@@ -229,6 +301,11 @@ def flatten_analysis_record(record: dict[str, Any]) -> dict[str, Any]:
     evidence = record.get("evidence") or {}
     review_flags = record.get("review_flags") or {}
     analysis_info = record.get("analysis_info") or {}
+    semantic_validation_warnings = record.get("semantic_validation_warnings") or []
+    if isinstance(semantic_validation_warnings, list):
+        semantic_validation_warnings_text = "; ".join(map(str, semantic_validation_warnings))
+    else:
+        semantic_validation_warnings_text = as_clean_str(semantic_validation_warnings)
 
     flat.update(
         {
@@ -252,6 +329,7 @@ def flatten_analysis_record(record: dict[str, Any]) -> dict[str, Any]:
             "stance_evidence": evidence.get("stance_evidence"),
             "needs_more_context": review_flags.get("needs_more_context"),
             "low_confidence_reason": review_flags.get("low_confidence_reason"),
+            "semantic_validation_warnings": semantic_validation_warnings_text,
             "model_name": analysis_info.get("model_name"),
             "analyzed_at": analysis_info.get("analyzed_at"),
             "run_id": analysis_info.get("run_id"),
@@ -273,8 +351,10 @@ def make_failure_record(
         "run_id": run_id,
         "comment_id": sample.comment_id,
         "weibo_id": sample.weibo_id,
+        "parent_id": sample.parent_id,
         "analysis_context": sample.analysis_context,
         "content": sample.content,
+        "parent_comment_text": sample.parent_comment_text,
         "error_type": type(error).__name__,
         "error_message": str(error),
         "retry_count": retry_count,

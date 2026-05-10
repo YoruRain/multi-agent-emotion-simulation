@@ -20,9 +20,9 @@ ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_API_BASE = "https://api.deepseek.com"
 DEFAULT_COMMENT_PATH = PROJECT_ROOT / "data" / "high_quality" / "topic_comment.parquet"
 DEFAULT_WEIBO_PATH = PROJECT_ROOT / "data" / "high_quality" / "topic_weibo.parquet"
-DEFAULT_OUTPUT_JSONL = PROJECT_ROOT / "data" / "analysis" / "comment_analysis_result.jsonl"
-DEFAULT_OUTPUT_PARQUET = PROJECT_ROOT / "data" / "analysis" / "comment_analysis_result.parquet"
-DEFAULT_FAILED_JSONL = PROJECT_ROOT / "data" / "analysis" / "comment_analysis_failed.jsonl"
+DEFAULT_OUTPUT_JSONL = PROJECT_ROOT / "data" / "profile" / "comments" / "comment_analysis_result.jsonl"
+DEFAULT_OUTPUT_PARQUET = PROJECT_ROOT / "data" / "profile" / "comments" / "comment_analysis_result.parquet"
+DEFAULT_FAILED_JSONL = PROJECT_ROOT / "data" / "profile" / "comments" / "comment_analysis_failed.jsonl"
 DEFAULT_LOG_DIR = PROJECT_ROOT / ".log"
 DEFAULT_LOG_FILE = DEFAULT_LOG_DIR / "comment_analysis.log"
 
@@ -48,6 +48,7 @@ class AnalysisConfig:
     limit: int | None
     random_sample: bool
     random_seed: int | None
+    comment_level: str
     response_format_json: bool
 
 
@@ -79,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     load_dotenv(ENV_PATH)
 
     parser = argparse.ArgumentParser(
-        description="Asynchronously analyze first-level comments with DeepSeek."
+        description="Asynchronously analyze first-level or second-level comments with DeepSeek."
     )
     parser.add_argument("--comment-path", type=Path, default=DEFAULT_COMMENT_PATH)
     parser.add_argument("--weibo-path", type=Path, default=DEFAULT_WEIBO_PATH)
@@ -152,6 +153,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional random seed for reproducible --random-sample runs.",
     )
     parser.add_argument(
+        "--comment-level",
+        choices=("first", "second"),
+        default=os.getenv("COMMENT_ANALYSIS_COMMENT_LEVEL", "first"),
+        help="Comment level to analyze: first-level comments or second-level replies.",
+    )
+    parser.add_argument(
         "--no-response-format",
         action="store_true",
         help="Do not send OpenAI-compatible JSON response_format to DeepSeek.",
@@ -187,5 +194,6 @@ def build_config(args: argparse.Namespace) -> AnalysisConfig:
         limit=args.limit,
         random_sample=args.random_sample,
         random_seed=args.random_seed,
+        comment_level=args.comment_level,
         response_format_json=not args.no_response_format,
     )

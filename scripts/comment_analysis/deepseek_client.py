@@ -34,7 +34,8 @@ def build_input_payload(sample: CommentSample) -> dict[str, str]:
         "comment_id": sample.comment_id,
         "topic": sample.topic,
         "source_weibo_summary": sample.analysis_context,
-        "parent_comment_summary": "",
+        "parent_comment_summary": sample.parent_comment_text,
+        "parent_comment_text": sample.parent_comment_text,
         "comment_text": sample.content,
     }
 

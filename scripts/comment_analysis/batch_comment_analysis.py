@@ -1,14 +1,14 @@
 """
-Asynchronously analyze first-level Weibo comments with the DeepSeek API.
+Asynchronously analyze Weibo comments with the DeepSeek API.
 
 Default inputs:
     data/high_quality/topic_comment.parquet
     data/high_quality/topic_weibo.parquet
 
 Default outputs:
-    data/analysis/comment_analysis_result.jsonl
-    data/analysis/comment_analysis_result.parquet
-    data/analysis/comment_analysis_failed.jsonl
+    data/profile/comments/comment_analysis_result.jsonl
+    data/profile/comments/comment_analysis_result.parquet
+    data/profile/comments/comment_analysis_failed.jsonl
 
 Run from the project root:
     python scripts/comment_analysis/batch_comment_analysis.py --limit 20
@@ -110,7 +110,8 @@ def main() -> None:
     logging.info("Logging to file: %s", config.log_file)
     logging.info("Run id: %s", config.run_id)
     logging.info(
-        "Sampling config: limit=%s, random_sample=%s, random_seed=%s",
+        "Sampling config: comment_level=%s, limit=%s, random_sample=%s, random_seed=%s",
+        config.comment_level,
         config.limit,
         config.random_sample,
         config.random_seed,
@@ -125,7 +126,7 @@ def main() -> None:
 
     compact_jsonl(config.output_jsonl)
     completed_ids = load_completed_ids(config.output_jsonl, config.output_parquet)
-    samples, total_first_level, skipped_count = load_samples(config, completed_ids)
+    samples, selected_comment_count, skipped_count = load_samples(config, completed_ids)
 
     if not samples:
         row_count = save_parquet_from_jsonl(config.output_jsonl, config.output_parquet)
@@ -136,7 +137,7 @@ def main() -> None:
     final_rows = save_parquet_from_jsonl(config.output_jsonl, config.output_parquet)
 
     logging.info("Final summary")
-    logging.info("First-level samples: %s", total_first_level)
+    logging.info("Selected comment count: %s", selected_comment_count)
     logging.info("Skipped completed: %s", skipped_count)
     logging.info("New successes: %s", writer.success_count)
     logging.info("New failures: %s", writer.failure_count)
