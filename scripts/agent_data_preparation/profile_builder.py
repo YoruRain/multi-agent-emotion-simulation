@@ -13,6 +13,7 @@ from common import (
     normalize_id,
     parse_list_like,
     parse_mapping_like,
+    parse_bool,
     read_table,
     safe_float,
     safe_get,
@@ -38,8 +39,10 @@ BASE_COLUMNS = [
     "user_id",
     "screen_name",
     "gender",
+    "verified",
     "verified_type_name",
     "description",
+    "user_value",
     "user_value_label",
 ]
 EMOTION_COLUMNS = [
@@ -47,6 +50,8 @@ EMOTION_COLUMNS = [
     "pos_ratio",
     "neu_ratio",
     "neg_ratio",
+    "avg_polarity_score",
+    "polarity_std",
     "avg_intensity_score",
     "strong_emotion_ratio",
     "emotion_profile_summary",
@@ -56,6 +61,7 @@ TOPIC_COLUMNS = [
     "final_public_issue_topic_ratio",
     "final_entertainment_topic_ratio",
     "final_daily_life_topic_ratio",
+    "repost_topic_dependency",
     "topic_summary",
 ]
 PROPAGATION_COLUMNS = [
@@ -83,11 +89,14 @@ NUMERIC_FIELDS = [
     "pos_ratio",
     "neg_ratio",
     "neu_ratio",
+    "avg_polarity_score",
+    "polarity_std",
     "avg_intensity_score",
     "strong_emotion_ratio",
     "final_public_issue_topic_ratio",
     "final_entertainment_topic_ratio",
     "final_daily_life_topic_ratio",
+    "repost_topic_dependency",
     "repost_ratio",
     "repost_with_comment_ratio",
     "media_dependency_score",
@@ -176,9 +185,12 @@ def build_profile_record(row: pd.Series) -> dict[str, Any]:
         "base_identity": {
             "screen_name": safe_str(safe_get(row, "screen_name"), "未知"),
             "gender": safe_str(safe_get(row, "gender"), "未知"),
+            "verified": parse_bool(safe_get(row, "verified"), False),
             "verified_type_name": safe_str(safe_get(row, "verified_type_name"), "未知"),
             "memory_user_level": safe_str(safe_get(row, "memory_user_level"), "background"),
+            "user_value": safe_int(safe_get(row, "user_value"), 0),
             "user_value_label": safe_str(safe_get(row, "user_value_label"), "未知"),
+            "follower_level": safe_str(safe_get(row, "follower_level"), "未知"),
             "influence_level": safe_str(safe_get(row, "influence_level"), "未知"),
         },
         "prompt_profile": {
