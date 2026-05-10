@@ -69,6 +69,7 @@ def render_sys_prompt(prompt_profile: dict[str, Any]) -> str:
 字段约束：
 - participate: true 或 false
 - action_type: "ignore", "comment", "repost", "repost_with_comment"
+- 如果 participate 为 false，则 action_type 必须为 "ignore"，reaction_text 必须为空字符串，emotion_intensity 和 stance_intensity 应为 0
 - emotion_label: "positive", "neutral", "anger", "sadness", "disgust", "worry", "surprise"
 - emotion_intensity: 0, 1, 2
 - stance_label: "support", "against", "neutral", "unclear"
