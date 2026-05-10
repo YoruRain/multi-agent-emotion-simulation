@@ -38,7 +38,7 @@ DEFAULT_INPUT_PATH = PROJECT_ROOT / "data" / "high_quality" / "user_weibo.parque
 DEFAULT_OUTPUT_PATH = (
     PROJECT_ROOT
     / "data"
-    / "analysis"
+    / "profile"
     / "weibos"
     / "emotion_profile"
     / "user_weibo_emotion_analysis.parquet"

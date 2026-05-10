@@ -9,7 +9,7 @@ import streamlit as st
 from utils import coerce_datetime_columns, ensure_columns, normalize_topic, safe_divide, to_path
 
 
-DEFAULT_DATA_DIR = Path(r"D:\GraduationProject\data\cleaned")
+DEFAULT_DATA_DIR = Path(r"D:\GraduationProject\data\high_quality")
 
 DATASET_FILE_CANDIDATES: dict[str, list[str]] = {
     "topic_weibo": ["topic_weibo.parquet", "df_topic_weibo.parquet", "topic_weibo.csv", "df_topic_weibo.csv"],

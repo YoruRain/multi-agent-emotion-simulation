@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INPUT_PATH = (
     PROJECT_ROOT
     / "data"
-    / "analysis"
+    / "profile"
     / "weibos"
     / "emotion_profile"
     / "user_weibo_emotion_analysis.parquet"
@@ -21,7 +21,7 @@ DEFAULT_INPUT_PATH = (
 DEFAULT_OUTPUT_PATH = (
     PROJECT_ROOT
     / "data"
-    / "analysis"
+    / "profile"
     / "weibos"
     / "emotion_profile"
     / "user_emotion_profile.parquet"
@@ -112,7 +112,7 @@ def load_weibo_emotion_results(input_path: Path) -> pd.DataFrame:
 
 def prepare_weibo_emotion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     prepared = df.copy()
-    prepared["user_id"] = prepared["user_id"].astype(str)
+    prepared["user_id"] = pd.to_numeric(prepared["user_id"], errors="coerce")
     prepared["year"] = pd.to_numeric(prepared["year"], errors="coerce")
     prepared["polarity_score"] = pd.to_numeric(prepared["polarity_score"], errors="coerce").fillna(0.0)
     prepared["emotion_intensity_score"] = pd.to_numeric(
@@ -122,7 +122,8 @@ def prepare_weibo_emotion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     prepared["text_weight"] = pd.to_numeric(prepared["text_weight"], errors="coerce").fillna(0.0)
     prepared["text_weight"] = prepared["text_weight"].clip(lower=0.0)
     prepared["sentiment_label_en"] = prepared["sentiment_label_en"].fillna("Neutral").astype(str)
-    prepared = prepared[prepared["user_id"].str.len() > 0].copy()
+    prepared = prepared[prepared["user_id"].notna()].copy()
+    prepared["user_id"] = prepared["user_id"].astype("int64")
     LOGGER.info("Prepared %d rows for user-level aggregation", len(prepared))
     return prepared
 
@@ -267,7 +268,7 @@ def aggregate_user_group(group: pd.DataFrame, profile_version: str, strong_thres
     strong_mask = intensity >= strong_threshold
 
     row: dict[str, Any] = {
-        "user_id": str(group["user_id"].iloc[0]),
+        "user_id": int(group["user_id"].iloc[0]),
         "profile_version": profile_version,
         "analyzable_weibo_count": int(len(group)),
         "weighted_weibo_count": float(weights.sum()),
@@ -310,6 +311,7 @@ def build_user_emotion_profiles(
             rows.append(aggregate_user_group(group, profile_version, strong_threshold))
 
     profile_df = pd.DataFrame(rows, columns=PROFILE_COLUMNS)
+    profile_df["user_id"] = profile_df["user_id"].astype("int64")
     LOGGER.info("Built %d user emotion profile rows", len(profile_df))
     return profile_df
 
