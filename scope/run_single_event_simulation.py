@@ -33,7 +33,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-resume", dest="resume", action="store_false", help="Do not skip completed rows.")
     parser.add_argument("--dry-run", action="store_true", help="Inspect prompts and messages without calling a model.")
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=None,
+        help="Max concurrently running agents. Defaults to --max-agents, or all pending agents if --max-agents is omitted.",
+    )
     parser.add_argument("--model-name", default=None, help="Override MODEL_NAME.")
     parser.add_argument("--base-url", default=None, help="Override BASE_URL.")
     parser.add_argument("--profiles-path", type=Path, default=None)
