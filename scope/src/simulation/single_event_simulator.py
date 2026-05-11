@@ -30,6 +30,18 @@ DEFAULT_MODEL_NAME = "deepseek-chat"
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 MEMORY_PRIORITY_PUBLIC_ISSUE = ["public_issue_memory", "style_memory", "propagation_memory", "general_memory"]
 MEMORY_PRIORITY_DEFAULT = ["style_memory", "propagation_memory", "general_memory", "public_issue_memory"]
+PARTICIPATION_TENDENCY_WEIGHTS = {
+    "final_public_issue_topic_ratio": 0.30,
+    "repost_ratio": 0.15,
+    "repost_with_comment_ratio": 0.20,
+    "kol_sensitivity_score": 0.20,
+    "propagation_activity_level": 0.15,
+}
+PARTICIPATION_TENDENCY_LABELS = {
+    "low": "低",
+    "medium": "中等",
+    "high": "高",
+}
 
 
 class ReactionParseError(ValueError):
@@ -64,6 +76,16 @@ def _safe_text(value: Any, default: str = "") -> str:
     return text if text else default
 
 
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, number))
+
+
 def _nested_get(payload: dict[str, Any], *keys: str, default: Any = "") -> Any:
     current: Any = payload
     for key in keys:
@@ -86,6 +108,61 @@ def _summarize_distribution(distribution: Any) -> str:
         return "暂无分布信息"
     items.sort(key=lambda item: item[1], reverse=True)
     return "，".join(f"{key}: {value:.1%}" for key, value in items[:5])
+
+
+def _propagation_activity_score(profile: dict[str, Any]) -> float | None:
+    raw_value = None
+    for candidate in [
+        _nested_get(profile, "behavior_parameters", "propagation_activity_level", default=None),
+        _nested_get(profile, "base_identity", "propagation_activity_level", default=None),
+        _nested_get(profile, "prompt_profile", "propagation_activity_level", default=None),
+    ]:
+        if candidate is not None and str(candidate).strip():
+            raw_value = candidate
+            break
+    numeric_value = _safe_float(raw_value)
+    if numeric_value is not None:
+        return numeric_value
+
+    text = _safe_text(raw_value)
+    if not text:
+        text = " ".join(
+            [
+                _safe_text(_nested_get(profile, "prompt_profile", "identity_summary")),
+                _safe_text(_nested_get(profile, "prompt_profile", "propagation_summary")),
+            ],
+        )
+    lowered = text.lower()
+    if any(token in lowered for token in ["high", "高活跃", "活跃程度高", "活跃度高"]):
+        return 1.0
+    if any(token in lowered for token in ["medium", "中等", "中活跃", "活跃程度中", "活跃度中"]):
+        return 0.5
+    if any(token in lowered for token in ["low", "低活跃", "活跃程度低", "活跃度低"]):
+        return 0.15
+    return None
+
+
+def estimate_participation_tendency(profile: dict[str, Any]) -> tuple[str, float]:
+    """Estimate a coarse prior participation tendency from behavior parameters."""
+
+    weighted_score = 0.0
+    total_weight = 0.0
+    for field, weight in PARTICIPATION_TENDENCY_WEIGHTS.items():
+        if field == "propagation_activity_level":
+            value = _propagation_activity_score(profile)
+        else:
+            value = _safe_float(_nested_get(profile, "behavior_parameters", field, default=None))
+        if value is None:
+            continue
+        weighted_score += value * weight
+        total_weight += weight
+
+    score = weighted_score / total_weight if total_weight else 0.5
+    if score < 0.25:
+        return "low", score
+    if score < 0.55:
+        return "medium", score
+    return "high", score
 
 
 def select_memories(event: dict[str, Any], memories: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
@@ -125,12 +202,18 @@ def _format_memory_snippets(memories: list[dict[str, Any]], max_chars: int = 320
     return "\n".join(lines)
 
 
-def build_event_message(event: dict[str, Any], memories: list[dict[str, Any]]) -> str:
+def build_event_message(
+    event: dict[str, Any],
+    memories: list[dict[str, Any]],
+    participation_tendency: str | None = None,
+) -> str:
     """Build the user message sent to a Weibo user Agent."""
 
     emotion_distribution = _summarize_distribution(event.get("emotion_distribution"))
     stance_distribution = _summarize_distribution(event.get("stance_distribution"))
     memory_snippets = _format_memory_snippets(memories)
+    tendency_key = participation_tendency or "medium"
+    tendency_label = PARTICIPATION_TENDENCY_LABELS.get(tendency_key, "中等")
 
     return (
         "请根据你的长期特征和历史表达习惯，判断你是否会参与下面这个微博热点事件的讨论，并只输出严格 JSON。\n\n"
@@ -144,11 +227,19 @@ def build_event_message(event: dict[str, Any], memories: list[dict[str, Any]]) -
         f"主要评价对象：{_safe_text(event.get('dominant_stance_target_text'), '暂无明确对象')}\n"
         f"情绪分布摘要：{emotion_distribution}\n"
         f"立场分布摘要：{stance_distribution}\n\n"
+        "【事实边界约束】\n"
+        "请只基于上面提供的事件信息和下面的记忆样本生成反应，不要补充未给出的具体事实、人物、机构、调查细节或数字。"
+        "如果事件信息不足，可以表达疑问、观望或不参与。\n\n"
+        "【参与倾向参考】\n"
+        f"系统预估该用户对此事件的参与倾向为：{tendency_label}（{tendency_key}）。"
+        "请在此基础上判断是否参与，不要过度保守，也不要脱离你的历史风格强行参与。\n\n"
         "【可参考的历史记忆片段】\n"
         f"{memory_snippets}\n\n"
         "【输出要求】\n"
-        "不要出现“根据画像”“作为 Agent”“模型认为”等元话语。"
-        "如果你不参与，reaction_text 必须为空字符串。"
+        "不要出现“根据画像”“作为 Agent”“模型认为”等元话语。\n"
+        "如果你不参与，reaction_text 必须为空字符串。\n"
+        "reaction_text 应控制在 10～80 个中文字符之间，除非该用户历史记忆明显具有长文表达风格。\n"
+        "微博式表达可以包含疑问、讽刺、感叹或简短评价，但不要写成评论文章。"
     )
 
 
@@ -264,8 +355,14 @@ class SingleEventSimulator:
         LOGGER.info("Event: %s | %s", event.get("event_id"), event.get("topic"))
         for agent in agents:
             selected = select_memories(event, agent.memories)
+            participation_tendency, participation_score = estimate_participation_tendency(agent.profile)
             LOGGER.info("Agent: %s user_id=%s level=%s", agent.agent_id, agent.user_id, agent.memory_user_level)
             LOGGER.info("System prompt preview: %s", agent.sys_prompt[:500].replace("\n", "\\n"))
+            LOGGER.info(
+                "Estimated participation tendency: %s (score=%.3f)",
+                PARTICIPATION_TENDENCY_LABELS[participation_tendency],
+                participation_score,
+            )
             LOGGER.info("Selected memory count: %d", len(selected))
             for memory in selected:
                 LOGGER.info(
@@ -273,11 +370,12 @@ class SingleEventSimulator:
                     memory.get("mark", "general_memory"),
                     _safe_text(memory.get("content"))[:220].replace("\n", " "),
                 )
-            LOGGER.info("Event message:\n%s", build_event_message(event, selected))
+            LOGGER.info("Event message:\n%s", build_event_message(event, selected, participation_tendency))
 
     async def _run_one_agent(self, event: dict[str, Any], agent_record: AgentRecord, run_id: str) -> dict[str, Any]:
         selected_memories = select_memories(event, agent_record.memories)
-        event_message = build_event_message(event, selected_memories)
+        participation_tendency, _participation_score = estimate_participation_tendency(agent_record.profile)
+        event_message = build_event_message(event, selected_memories, participation_tendency)
         base_row = self._build_base_result_row(event, agent_record, run_id)
 
         try:
@@ -409,6 +507,7 @@ class SingleEventSimulator:
 
     def _build_base_result_row(self, event: dict[str, Any], agent: AgentRecord, run_id: str) -> dict[str, Any]:
         profile = agent.profile
+        participation_tendency, participation_score = estimate_participation_tendency(profile)
         return {
             "run_id": run_id,
             "event_id": _safe_text(event.get("event_id")),
@@ -423,6 +522,9 @@ class SingleEventSimulator:
             "propagation_role": _safe_text(_nested_get(profile, "base_identity", "propagation_role"))
             or _safe_text(_nested_get(profile, "behavior_parameters", "propagation_role"))
             or _safe_text(_nested_get(profile, "prompt_profile", "propagation_role")),
+            "participation_tendency": participation_tendency,
+            "participation_tendency_label": PARTICIPATION_TENDENCY_LABELS[participation_tendency],
+            "participation_tendency_score": round(participation_score, 4),
             "model_name": self.model_name,
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
