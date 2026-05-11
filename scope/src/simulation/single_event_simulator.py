@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -310,14 +311,20 @@ class SingleEventSimulator:
             pending_agents.append((index, agent))
 
         if pending_agents:
-            effective_concurrency = len(pending_agents) if concurrency is None else concurrency
+            concurrency_source = "argument"
+            if concurrency is None:
+                effective_concurrency = max_agents if max_agents is not None else len(pending_agents)
+                concurrency_source = "max_agents" if max_agents is not None else "pending_agents"
+            else:
+                effective_concurrency = concurrency
             if effective_concurrency < 1:
                 raise ValueError("concurrency must be >= 1 or None for unlimited agent-level concurrency.")
             effective_concurrency = min(effective_concurrency, len(pending_agents))
             LOGGER.info(
-                "Running %d pending agents with agent-level concurrency=%d.",
+                "Running %d pending agents with agent-level concurrency=%d (source=%s).",
                 len(pending_agents),
                 effective_concurrency,
+                concurrency_source,
             )
         else:
             effective_concurrency = 1
@@ -326,23 +333,34 @@ class SingleEventSimulator:
         semaphore = asyncio.Semaphore(effective_concurrency)
 
         async def run_agent_with_limit(index: int, agent: AgentRecord) -> dict[str, Any]:
+            scheduled_at = time.perf_counter()
             async with semaphore:
-                LOGGER.info("Running agent %d/%d: %s", index, len(agents), agent.agent_id)
+                queue_elapsed = time.perf_counter() - scheduled_at
+                LOGGER.info(
+                    "Running agent %d/%d: %s (queue_wait=%.2fs)",
+                    index,
+                    len(agents),
+                    agent.agent_id,
+                    queue_elapsed,
+                )
                 return await self._run_one_agent(event, agent, run_id)
 
         with reactions_path.open("a", encoding="utf-8", newline="\n") as file:
             tasks = [asyncio.create_task(run_agent_with_limit(index, agent)) for index, agent in pending_agents]
             done_count = 0
             for task in asyncio.as_completed(tasks):
+                completed_at = time.perf_counter()
                 row = await task
+                collect_elapsed = time.perf_counter() - completed_at
                 file.write(json.dumps(row, ensure_ascii=False) + "\n")
                 file.flush()
                 done_count += 1
                 LOGGER.info(
-                    "Completed pending agent %d/%d: %s",
+                    "Completed pending agent %d/%d: %s (completion_wait=%.2fs)",
                     done_count,
                     len(pending_agents),
                     row.get("agent_id", "unknown"),
+                    collect_elapsed,
                 )
 
         analyze_results(reactions_path, summary_report_path)
@@ -373,6 +391,7 @@ class SingleEventSimulator:
             LOGGER.info("Event message:\n%s", build_event_message(event, selected, participation_tendency))
 
     async def _run_one_agent(self, event: dict[str, Any], agent_record: AgentRecord, run_id: str) -> dict[str, Any]:
+        agent_started_at = time.perf_counter()
         selected_memories = select_memories(event, agent_record.memories)
         participation_tendency, _participation_score = estimate_participation_tendency(agent_record.profile)
         event_message = build_event_message(event, selected_memories, participation_tendency)
@@ -380,6 +399,7 @@ class SingleEventSimulator:
 
         try:
             raw_output, reaction = await self._call_agentscope(agent_record, event_message, selected_memories)
+            agent_elapsed = time.perf_counter() - agent_started_at
             row = {**base_row, **reaction.model_dump()}
             row.update(
                 {
@@ -388,9 +408,12 @@ class SingleEventSimulator:
                     "error_message": "",
                 },
             )
+            LOGGER.info("Agent %s finished successfully in %.2fs.", agent_record.agent_id, agent_elapsed)
             return row
         except ReactionParseError as exc:
+            agent_elapsed = time.perf_counter() - agent_started_at
             LOGGER.exception("Agent %s returned unparseable JSON: %s", agent_record.agent_id, exc)
+            LOGGER.info("Agent %s finished with parse_failed in %.2fs.", agent_record.agent_id, agent_elapsed)
             return {
                 **base_row,
                 "participate": None,
@@ -406,7 +429,9 @@ class SingleEventSimulator:
                 "error_message": str(exc),
             }
         except Exception as exc:  # noqa: BLE001 - failed agents must be persisted
+            agent_elapsed = time.perf_counter() - agent_started_at
             LOGGER.exception("Agent %s failed: %s", agent_record.agent_id, exc)
+            LOGGER.info("Agent %s finished with failed status in %.2fs.", agent_record.agent_id, agent_elapsed)
             return {
                 **base_row,
                 "participate": None,
@@ -471,23 +496,44 @@ class SingleEventSimulator:
         )
 
         msg = Msg("user", event_message, "user")
+        first_call_started_at = time.perf_counter()
         response = await agent(msg, structured_model=ReactionSchema)
+        first_call_elapsed = time.perf_counter() - first_call_started_at
         structured = getattr(response, "metadata", {}).get("structured_output") if getattr(response, "metadata", None) else None
         raw_output = json.dumps(getattr(response, "metadata", {}), ensure_ascii=False)
         if structured:
+            LOGGER.info(
+                "Agent %s first model call returned structured output in %.2fs.",
+                agent_record.agent_id,
+                first_call_elapsed,
+            )
             return raw_output, normalize_structured_output(structured)
 
         raw_text = _safe_text(getattr(response, "content", "")) or raw_output
         reaction, parse_status, error_message = parse_reaction_json(raw_text)
         if reaction is not None:
+            LOGGER.info(
+                "Agent %s first model call returned parseable text in %.2fs.",
+                agent_record.agent_id,
+                first_call_elapsed,
+            )
             return raw_text, reaction
 
+        LOGGER.warning(
+            "Agent %s first model call was unparseable after %.2fs; retrying. status=%s error=%s",
+            agent_record.agent_id,
+            first_call_elapsed,
+            parse_status,
+            error_message,
+        )
         retry_msg = Msg(
             "user",
             "上一次输出无法解析。请只输出一个严格 JSON 对象，字段和值必须满足指定 schema，不要添加任何额外文字。",
             "user",
         )
+        retry_call_started_at = time.perf_counter()
         retry_response = await agent(retry_msg, structured_model=ReactionSchema)
+        retry_call_elapsed = time.perf_counter() - retry_call_started_at
         retry_structured = (
             getattr(retry_response, "metadata", {}).get("structured_output")
             if getattr(retry_response, "metadata", None)
@@ -495,14 +541,31 @@ class SingleEventSimulator:
         )
         retry_raw = json.dumps(getattr(retry_response, "metadata", {}), ensure_ascii=False)
         if retry_structured:
+            LOGGER.info(
+                "Agent %s retry model call returned structured output in %.2fs.",
+                agent_record.agent_id,
+                retry_call_elapsed,
+            )
             return retry_raw, normalize_structured_output(retry_structured)
         retry_text = _safe_text(getattr(retry_response, "content", "")) or retry_raw
         retry_reaction, retry_status, retry_error = parse_reaction_json(retry_text)
         if retry_reaction is None:
+            LOGGER.warning(
+                "Agent %s retry model call remained unparseable after %.2fs. status=%s error=%s",
+                agent_record.agent_id,
+                retry_call_elapsed,
+                retry_status,
+                retry_error,
+            )
             raise ReactionParseError(
                 f"JSON parse failed: {retry_error or error_message}; status={retry_status or parse_status}",
                 raw_output=retry_text,
             )
+        LOGGER.info(
+            "Agent %s retry model call returned parseable text in %.2fs.",
+            agent_record.agent_id,
+            retry_call_elapsed,
+        )
         return retry_text, retry_reaction
 
     def _build_base_result_row(self, event: dict[str, Any], agent: AgentRecord, run_id: str) -> dict[str, Any]:
@@ -523,7 +586,7 @@ class SingleEventSimulator:
             or _safe_text(_nested_get(profile, "behavior_parameters", "propagation_role"))
             or _safe_text(_nested_get(profile, "prompt_profile", "propagation_role")),
             "participation_tendency": participation_tendency,
-            "participation_tendency_label": PARTICIPATION_TENDENCY_LABELS[participation_tendency],
+            # "participation_tendency_label": PARTICIPATION_TENDENCY_LABELS[participation_tendency],
             "participation_tendency_score": round(participation_score, 4),
             "model_name": self.model_name,
             "created_at": datetime.now().isoformat(timespec="seconds"),
