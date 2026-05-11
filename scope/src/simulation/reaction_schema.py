@@ -11,6 +11,13 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 ActionType = Literal["ignore", "comment", "repost", "repost_with_comment"]
 EmotionLabel = Literal["positive", "neutral", "anger", "sadness", "disgust", "worry", "surprise"]
 StanceLabel = Literal["support", "against", "neutral", "unclear"]
+STRING_FIELD_ORDER = [
+    "action_type",
+    "emotion_label",
+    "stance_label",
+    "reaction_text",
+    "reason",
+]
 
 
 class ReactionSchema(BaseModel):
@@ -104,6 +111,47 @@ def _extract_text_from_content_blocks(raw_output: str) -> list[str]:
     return texts
 
 
+def _escape_unescaped_quotes(value: str) -> str:
+    escaped_chars: list[str] = []
+    for index, char in enumerate(value):
+        if char != '"':
+            escaped_chars.append(char)
+            continue
+
+        backslash_count = 0
+        cursor = index - 1
+        while cursor >= 0 and value[cursor] == "\\":
+            backslash_count += 1
+            cursor -= 1
+        escaped_chars.append('\\"' if backslash_count % 2 == 0 else char)
+    return "".join(escaped_chars)
+
+
+def _repair_unescaped_string_quotes(candidate: str) -> str | None:
+    """Escape bare quotes inside known string fields from otherwise JSON-like output."""
+
+    repaired = candidate
+    changed = False
+    for index, field in enumerate(STRING_FIELD_ORDER):
+        next_field = STRING_FIELD_ORDER[index + 1] if index + 1 < len(STRING_FIELD_ORDER) else None
+        if next_field:
+            pattern = rf'("{field}"\s*:\s*")(.*?)("\s*,\s*"{next_field}"\s*:)'
+        else:
+            pattern = rf'("{field}"\s*:\s*")(.*?)("\s*\}})'
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal changed
+            value = match.group(2)
+            escaped_value = _escape_unescaped_quotes(value)
+            if escaped_value != value:
+                changed = True
+            return f"{match.group(1)}{escaped_value}{match.group(3)}"
+
+        repaired = re.sub(pattern, replace, repaired, count=1, flags=re.DOTALL)
+
+    return repaired if changed else None
+
+
 def parse_reaction_json(raw_output: str) -> tuple[ReactionSchema | None, str, str | None]:
     """Parse and validate model output.
 
@@ -121,6 +169,12 @@ def parse_reaction_json(raw_output: str) -> tuple[ReactionSchema | None, str, st
         extracted = _extract_first_json_object(candidate_text)
         if extracted and extracted != candidate_text:
             candidates.append(extracted)
+            repaired_extracted = _repair_unescaped_string_quotes(extracted)
+            if repaired_extracted and repaired_extracted != extracted:
+                candidates.append(repaired_extracted)
+        repaired = _repair_unescaped_string_quotes(candidate_text)
+        if repaired and repaired != candidate_text:
+            candidates.append(repaired)
 
     last_error: str | None = None
     for candidate in candidates:

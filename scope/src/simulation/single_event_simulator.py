@@ -240,7 +240,8 @@ def build_event_message(
         "不要出现“根据画像”“作为 Agent”“模型认为”等元话语。\n"
         "如果你不参与，reaction_text 必须为空字符串。\n"
         "reaction_text 应控制在 10～80 个中文字符之间，除非该用户历史记忆明显具有长文表达风格。\n"
-        "微博式表达可以包含疑问、讽刺、感叹或简短评价，但不要写成评论文章。"
+        "微博式表达可以包含疑问、讽刺、感叹或简短评价，但不要写成评论文章。\n"
+        "所有字符串值都必须是合法 JSON 字符串；如需引用短语，请优先使用中文引号“”，不要直接使用未转义的英文双引号。"
     )
 
 
@@ -528,7 +529,8 @@ class SingleEventSimulator:
         )
         retry_msg = Msg(
             "user",
-            "上一次输出无法解析。请只输出一个严格 JSON 对象，字段和值必须满足指定 schema，不要添加任何额外文字。",
+            "上一次输出无法解析。请只输出一个严格 JSON 对象，字段和值必须满足指定 schema，不要添加任何额外文字。"
+            "字符串内部如需引用短语，请使用中文引号“”，不要使用未转义的英文双引号。",
             "user",
         )
         retry_call_started_at = time.perf_counter()
@@ -605,6 +607,8 @@ class SingleEventSimulator:
                 try:
                     record = json.loads(text)
                 except json.JSONDecodeError:
+                    continue
+                if _safe_text(record.get("parse_status")) != "success":
                     continue
                 event_id = _safe_text(record.get("event_id"))
                 agent_id = _safe_text(record.get("agent_id"))
