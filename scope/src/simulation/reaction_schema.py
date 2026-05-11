@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 ActionType = Literal["ignore", "comment", "repost", "repost_with_comment"]
-EmotionLabel = Literal["positive", "neutral", "anger", "sadness", "disgust", "worry", "surprise"]
-StanceLabel = Literal["support", "against", "neutral", "unclear"]
+EmotionLabel = Literal["anger", "sadness", "fear", "joy", "disgust", "disappointment", "surprise", "sympathy", "confusion", "admiration", "mixed"]
+StanceLabel = Literal["favor", "against", "neutral", "mixed", "unclear"]
 STRING_FIELD_ORDER = [
     "action_type",
     "emotion_label",
