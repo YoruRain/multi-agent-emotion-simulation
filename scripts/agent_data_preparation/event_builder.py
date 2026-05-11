@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -189,6 +190,34 @@ def infer_event_emotion_tendency(features: dict[str, Any]) -> str:
     return "unclear"
 
 
+def choose_preferred_emotion_label(
+    labels: list[str],
+    weights: list[float],
+    preferred_labels: set[str],
+    fallback: str,
+) -> str:
+    preferred = [(label, weight) for label, weight in zip(labels, weights) if label in preferred_labels]
+    if not preferred:
+        return fallback
+    return dominant_from_weights([label for label, _ in preferred], [weight for _, weight in preferred], fallback)
+
+
+def refine_dominant_emotion_label(comment_group: pd.DataFrame, tendency: str, fallback: str) -> str:
+    if comment_group.empty:
+        return fallback
+
+    weights = build_weights(comment_group, "emotion_intensity")
+    labels = [
+        normalize_label(safe_get(row, "emotion_label"), VALID_EMOTION_LABELS)
+        for _, row in comment_group.iterrows()
+    ]
+    if tendency == "negative":
+        return choose_preferred_emotion_label(labels, weights, NEGATIVE_EMOTIONS, fallback)
+    if tendency == "positive":
+        return choose_preferred_emotion_label(labels, weights, {"joy", "sympathy"}, fallback)
+    return fallback
+
+
 def describe_intensity(features: dict[str, Any]) -> str:
     avg_intensity = safe_float(features.get("avg_emotion_intensity"), 0.0)
     strong_ratio = safe_float(features.get("strong_emotion_ratio"), 0.0)
@@ -343,6 +372,38 @@ def typed_target_text(target_type: str, target_text: str) -> str:
     return defaults.get(target_type, "相关对象")
 
 
+def clean_focus_text(text: str, limit: int = 80) -> str:
+    cleaned = re.sub(r"\s+", "", text)
+    cleaned = cleaned.strip(" ，,。；;：:“”\"'（）()[]【】")
+    return cleaned[:limit]
+
+
+def extract_focus_from_context(event_context: str) -> str:
+    context = normalize_text(event_context)
+    if not context:
+        return ""
+
+    patterns = [
+        r"(?:争议点|争议焦点)(?:主要)?在于[:：]?\s*([^。；;\n]+)",
+        r"引发对([^。；;\n]{2,80}?)(?:的)?争议",
+        r"引发了?关于([^。；;\n]{2,80}?)(?:的)?争议",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, context)
+        if match:
+            focus = clean_focus_text(match.group(1))
+            if focus:
+                return focus
+    return ""
+
+
+def infer_stance_target_text(row: pd.Series, event_context: str) -> str:
+    extracted = extract_focus_from_context(event_context)
+    if extracted:
+        return extracted
+    return clean_focus_text(safe_str(safe_get(row, "topic"), ""))
+
+
 def build_stance_focus_description(
     target_type: str,
     target_text: str,
@@ -457,20 +518,38 @@ def build_event_record(row: pd.Series, comment_group: pd.DataFrame) -> dict[str,
     emotion_features = aggregate_emotion_features(comment_group)
     stance_features = aggregate_stance_features(comment_group)
     event_emotion_tendency = infer_event_emotion_tendency(emotion_features)
+    dominant_emotion_label = refine_dominant_emotion_label(
+        comment_group,
+        event_emotion_tendency,
+        safe_str(emotion_features.get("dominant_emotion_label"), "unclear"),
+    )
+    emotion_features["dominant_emotion_label"] = dominant_emotion_label
+    event_context = build_event_context(row)
+
+    stance_target_type = safe_str(stance_features.get("dominant_stance_target_type"), "unclear")
+    stance_target_text = safe_str(stance_features.get("dominant_stance_target_text"), "")
+    if not stance_target_text:
+        stance_target_text = infer_stance_target_text(row, event_context)
+    event_stance_focus = build_stance_focus_description(
+        stance_target_type,
+        stance_target_text,
+        safe_str(stance_features.get("dominant_responsibility"), "unclear"),
+        safe_str(stance_features.get("dominant_norm_violation"), "unclear"),
+    )
 
     return {
         "event_id": f"event_{weibo_id}",
         "weibo_id": weibo_id,
         "topic": safe_str(safe_get(row, "topic"), ""),
-        "event_context": build_event_context(row),
+        "event_context": event_context,
         "event_type": infer_event_type(row),
         "event_emotion_tendency": event_emotion_tendency,
         "event_emotion_summary": build_event_emotion_summary(emotion_features),
-        "event_stance_focus": safe_str(stance_features.get("event_stance_focus"), UNKNOWN_STANCE_FOCUS),
-        "dominant_emotion_label": safe_str(emotion_features.get("dominant_emotion_label"), "unclear"),
+        "event_stance_focus": event_stance_focus,
+        "dominant_emotion_label": dominant_emotion_label,
         "dominant_stance_label": safe_str(stance_features.get("dominant_stance_label"), "unclear"),
-        "dominant_stance_target_type": safe_str(stance_features.get("dominant_stance_target_type"), "unclear"),
-        "dominant_stance_target_text": safe_str(stance_features.get("dominant_stance_target_text"), ""),
+        "dominant_stance_target_type": stance_target_type,
+        "dominant_stance_target_text": stance_target_text,
         "dominant_responsibility": safe_str(stance_features.get("dominant_responsibility"), "unclear"),
         "dominant_norm_violation": safe_str(stance_features.get("dominant_norm_violation"), "unclear"),
         "comment_count_used": int(len(comment_group)),
@@ -522,6 +601,11 @@ def log_record_distributions(records: list[dict[str, Any]]) -> None:
     LOGGER.info("成功生成的事件数: %d", len(records))
     for field in ["event_emotion_tendency", "dominant_emotion_label", "dominant_stance_label", "event_type"]:
         LOGGER.info("%s 分布: %s", field, dict(Counter(record.get(field, "unclear") for record in records)))
+
+    empty_target_text_count = sum(1 for record in records if not safe_str(record.get("dominant_stance_target_text"), ""))
+    LOGGER.info("dominant_stance_target_text 为空的数量: %d", empty_target_text_count)
+    for index, record in enumerate(records[:5], start=1):
+        LOGGER.info("event_stance_focus 样例 %d: %s", index, truncate_text(record.get("event_stance_focus"), 220))
 
     for index, record in enumerate(records[:3], start=1):
         sample = dict(record)
