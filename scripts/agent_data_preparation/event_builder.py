@@ -27,7 +27,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_TOPIC_WEIBO_PATH = PROJECT_ROOT / "data" / "high_quality" / "topic_weibo.parquet"
 DEFAULT_COMMENT_ANALYSIS_PATH = PROJECT_ROOT / "data" / "profile" / "comments" / "comment_analysis_result.parquet"
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "scope" / "events.jsonl"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "scope" / "data" / "inputs" / "events.jsonl"
 
 EVENT_TYPE = "public_issue"
 UNKNOWN_STANCE_FOCUS = "评论区主要围绕该事件本身展开讨论，但具体争议焦点不够明确。"

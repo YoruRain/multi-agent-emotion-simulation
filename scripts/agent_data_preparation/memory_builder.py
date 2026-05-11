@@ -27,7 +27,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_INPUT_PATH = (
     PROJECT_ROOT / "data" / "profile" / "weibos" / "memory_sample" / "user_weibo_memory_sample.parquet"
 )
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "scope" / "agent_memories.jsonl"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "scope" / "data" / "inputs" / "agent_memories.jsonl"
 PUBLIC_ISSUE_CATEGORIES = {"社会公共事件", "政策民生", "时事政治"}
 LEVEL_LIMITS = {"core": 6, "normal": 3, "background": 1}
 

@@ -9,8 +9,8 @@ from common import PROJECT_ROOT, configure_logging, read_table, safe_str, write_
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_INPUT_PATH = PROJECT_ROOT / "data" / "scope" / "agent_profiles.jsonl"
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "scope" / "agent_sys_prompts.jsonl"
+DEFAULT_INPUT_PATH = PROJECT_ROOT / "scope" / "data" / "inputs" / "agent_profiles.jsonl"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "scope" / "data" / "inputs" / "agent_sys_prompts.jsonl"
 DEFAULT_SUMMARY_TEXT = "暂无相关画像信息。"
 
 

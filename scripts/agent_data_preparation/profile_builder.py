@@ -33,7 +33,7 @@ DEFAULT_PROPAGATION_PATH = (
 DEFAULT_MEMORY_SUMMARY_PATH = (
     PROJECT_ROOT / "data" / "profile" / "weibos" / "memory_sample" / "user_memory_summary.parquet"
 )
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "scope" / "agent_profiles.jsonl"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "scope" / "data" / "inputs" / "agent_profiles.jsonl"
 
 BASE_COLUMNS = [
     "user_id",
