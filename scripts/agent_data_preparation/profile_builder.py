@@ -192,6 +192,7 @@ def build_profile_record(row: pd.Series) -> dict[str, Any]:
             "user_value_label": safe_str(safe_get(row, "user_value_label"), "未知"),
             "follower_level": safe_str(safe_get(row, "follower_level"), "未知"),
             "influence_level": safe_str(safe_get(row, "influence_level"), "未知"),
+            "propagation_role": safe_str(safe_get(row, "propagation_role"), "普通参与者"),
         },
         "prompt_profile": {
             "identity_summary": build_identity_summary(row),

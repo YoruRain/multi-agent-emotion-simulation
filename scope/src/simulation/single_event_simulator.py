@@ -390,7 +390,9 @@ class SingleEventSimulator:
             "memory_user_level": agent.memory_user_level,
             "verified_type_name": _safe_text(_nested_get(profile, "base_identity", "verified_type_name")),
             "influence_level": _safe_text(_nested_get(profile, "base_identity", "influence_level")),
-            "propagation_role": _safe_text(_nested_get(profile, "behavior_parameters", "propagation_role"))
+            # "propagation_role": _safe_text(_nested_get(profile, "behavior_parameters", "propagation_role"))
+            "propagation_role": _safe_text(_nested_get(profile, "base_identity", "propagation_role"))
+            or _safe_text(_nested_get(profile, "behavior_parameters", "propagation_role"))
             or _safe_text(_nested_get(profile, "prompt_profile", "propagation_role")),
             "model_name": self.model_name,
             "created_at": datetime.now().isoformat(timespec="seconds"),
