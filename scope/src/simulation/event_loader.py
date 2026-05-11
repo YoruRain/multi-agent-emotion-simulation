@@ -9,7 +9,7 @@ from .agent_loader import PROJECT_ROOT
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_EVENTS_PATH = PROJECT_ROOT / "data" / "scope" / "events.jsonl"
+DEFAULT_EVENTS_PATH = PROJECT_ROOT / "scope" / "data" / "inputs" / "events.jsonl"
 
 
 def load_events(events_path: Path = DEFAULT_EVENTS_PATH) -> list[dict[str, Any]]:

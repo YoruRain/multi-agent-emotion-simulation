@@ -8,7 +8,7 @@
 
 ## 输入文件
 
-默认输入目录为 `data/scope/`：
+默认输入目录为 `scope/data/inputs/`：
 
 - `agent_profiles.jsonl`：每行一个用户 Agent 画像，包含 `agent_id`、`user_id`、`base_identity`、`prompt_profile`、`behavior_parameters`、`metadata`。
 - `agent_memories.jsonl`：每行一个用户的历史记忆样本，包含 `memory_user_level` 和 `memories` 列表。

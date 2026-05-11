@@ -9,7 +9,7 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "scope"
+DEFAULT_DATA_DIR = PROJECT_ROOT / "scope" / "data" / "inputs"
 DEFAULT_AGENT_PROFILES_PATH = DEFAULT_DATA_DIR / "agent_profiles.jsonl"
 DEFAULT_AGENT_MEMORIES_PATH = DEFAULT_DATA_DIR / "agent_memories.jsonl"
 DEFAULT_AGENT_SYS_PROMPTS_PATH = DEFAULT_DATA_DIR / "agent_sys_prompts.jsonl"
