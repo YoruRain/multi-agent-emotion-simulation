@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,7 @@ def load_agent_records(
     sys_prompts_path: Path = DEFAULT_AGENT_SYS_PROMPTS_PATH,
     memory_user_level: str | None = None,
     max_agents: int | None = None,
+    random_seed: int | None = None,
     use_fallback_prompt: bool = True,
 ) -> list[AgentRecord]:
     """Load and merge profile, memory and system prompt records by agent_id."""
@@ -120,7 +122,7 @@ def load_agent_records(
     }
 
     target_level = memory_user_level.strip().lower() if memory_user_level else None
-    merged: list[AgentRecord] = []
+    candidates: list[AgentRecord] = []
 
     for agent_id, profile in profiles.items():
         memory_record = memories_by_agent.get(agent_id)
@@ -146,7 +148,7 @@ def load_agent_records(
             LOGGER.warning("Agent %s has no sys_prompt; using a fallback prompt.", agent_id)
 
         user_id = _as_text(profile.get("user_id")) or _as_text(memory_record.get("user_id") if memory_record else "")
-        merged.append(
+        candidates.append(
             AgentRecord(
                 agent_id=agent_id,
                 user_id=user_id,
@@ -158,14 +160,16 @@ def load_agent_records(
             ),
         )
 
-        if max_agents is not None and len(merged) >= max_agents:
-            break
+    rng = random.Random(random_seed)
+    rng.shuffle(candidates)
+    merged = candidates[:max_agents] if max_agents is not None else candidates
 
     LOGGER.info(
-        "Prepared %d agent records from %d profiles; memory_user_level=%s max_agents=%s",
+        "Prepared %d agent records from %d profiles; memory_user_level=%s max_agents=%s sampling=random seed=%s",
         len(merged),
         len(profiles),
         memory_user_level,
         max_agents,
+        random_seed,
     )
     return merged

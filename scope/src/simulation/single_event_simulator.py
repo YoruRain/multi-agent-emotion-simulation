@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,6 +61,13 @@ class SimulatorPaths:
     sys_prompts_path: Path = DEFAULT_AGENT_SYS_PROMPTS_PATH
     events_path: Path = DEFAULT_EVENTS_PATH
     output_dir: Path = DEFAULT_OUTPUT_DIR
+
+
+@dataclass(frozen=True)
+class ParticipationGateDecision:
+    probability: float
+    draw: float
+    passed: bool
 
 
 def configure_logging(verbose: bool = False) -> None:
@@ -166,6 +174,23 @@ def estimate_participation_tendency(profile: dict[str, Any]) -> tuple[str, float
     return "high", score
 
 
+def decide_participation(profile: dict[str, Any], rng: random.Random) -> ParticipationGateDecision:
+    """Decide whether this agent participates before calling the LLM."""
+
+    _tendency, score = estimate_participation_tendency(profile)
+    probability = max(0.0, min(1.0, score))
+    draw = rng.random()
+    return ParticipationGateDecision(
+        probability=probability,
+        draw=draw,
+        passed=draw < probability,
+    )
+
+
+def _is_participating_reaction(reaction: ReactionSchema) -> bool:
+    return reaction.participate and reaction.action_type != "ignore" and bool(_safe_text(reaction.reaction_text))
+
+
 def select_memories(event: dict[str, Any], memories: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
     """Select a small set of memories according to event type and mark priority."""
 
@@ -217,7 +242,8 @@ def build_event_message(
     tendency_label = PARTICIPATION_TENDENCY_LABELS.get(tendency_key, "中等")
 
     return (
-        "请根据你的长期特征和历史表达习惯，判断你是否会参与下面这个微博热点事件的讨论，并只输出严格 JSON。\n\n"
+        "程序已经根据用户行为参数完成是否参与决策：该用户本轮会参与讨论。"
+        "请根据你的长期特征和历史表达习惯，只生成参与后的微博式行为与内容，并只输出严格 JSON。\n\n"
         "【热点事件】\n"
         f"话题：{_safe_text(event.get('topic'), '未知话题')}\n"
         f"事件背景：{_safe_text(event.get('event_context'), '暂无事件背景')}\n"
@@ -230,15 +256,15 @@ def build_event_message(
         f"立场分布摘要：{stance_distribution}\n\n"
         "【事实边界约束】\n"
         "请只基于上面提供的事件信息和下面的记忆样本生成反应，不要补充未给出的具体事实、人物、机构、调查细节或数字。"
-        "如果事件信息不足，可以表达疑问、观望或不参与。\n\n"
+        "如果事件信息不足，可以表达疑问、观望或低强度参与。\n\n"
         "【参与倾向参考】\n"
         f"系统预估该用户对此事件的参与倾向为：{tendency_label}（{tendency_key}）。"
-        "请在此基础上判断是否参与，不要过度保守，也不要脱离你的历史风格强行参与。\n\n"
+        "程序门控已判定该用户会参与；请在此基础上调节表达强度、行为类型和措辞风格，不要脱离历史风格强行拔高。\n\n"
         "【可参考的历史记忆片段】\n"
         f"{memory_snippets}\n\n"
         "【输出要求】\n"
         "不要出现“根据画像”“作为 Agent”“模型认为”等元话语。\n"
-        "如果你不参与，reaction_text 必须为空字符串。\n"
+        "participate 必须为 true，action_type 必须为 comment、repost 或 repost_with_comment 之一，reaction_text 不能为空。\n"
         "reaction_text 应控制在 10～80 个中文字符之间，除非该用户历史记忆明显具有长文表达风格。\n"
         "微博式表达可以包含疑问、讽刺、感叹或简短评价，但不要写成评论文章。\n"
         "所有字符串值都必须是合法 JSON 字符串；如需引用短语，请优先使用中文引号“”，不要直接使用未转义的英文双引号。"
@@ -284,6 +310,7 @@ class SingleEventSimulator:
             sys_prompts_path=self.paths.sys_prompts_path,
             memory_user_level=memory_user_level,
             max_agents=max_agents,
+            random_seed=self.seed,
         )
         if not agents:
             raise ValueError("No agent records matched the requested filters.")
@@ -332,6 +359,11 @@ class SingleEventSimulator:
             LOGGER.info("No pending agents to run for event=%s.", event_id)
 
         semaphore = asyncio.Semaphore(effective_concurrency)
+        participation_rng = random.Random(self.seed)
+        participation_gate_by_agent = {
+            agent.agent_id: decide_participation(agent.profile, participation_rng)
+            for _index, agent in pending_agents
+        }
 
         async def run_agent_with_limit(index: int, agent: AgentRecord) -> dict[str, Any]:
             scheduled_at = time.perf_counter()
@@ -344,7 +376,7 @@ class SingleEventSimulator:
                     agent.agent_id,
                     queue_elapsed,
                 )
-                return await self._run_one_agent(event, agent, run_id)
+                return await self._run_one_agent(event, agent, run_id, participation_gate_by_agent[agent.agent_id])
 
         with reactions_path.open("a", encoding="utf-8", newline="\n") as file:
             tasks = [asyncio.create_task(run_agent_with_limit(index, agent)) for index, agent in pending_agents]
@@ -372,15 +404,23 @@ class SingleEventSimulator:
     def _log_dry_run(self, event: dict[str, Any], agents: list[AgentRecord]) -> None:
         LOGGER.info("DRY RUN: no model calls will be made.")
         LOGGER.info("Event: %s | %s", event.get("event_id"), event.get("topic"))
+        participation_rng = random.Random(self.seed)
         for agent in agents:
             selected = select_memories(event, agent.memories)
             participation_tendency, participation_score = estimate_participation_tendency(agent.profile)
+            gate_decision = decide_participation(agent.profile, participation_rng)
             LOGGER.info("Agent: %s user_id=%s level=%s", agent.agent_id, agent.user_id, agent.memory_user_level)
             LOGGER.info("System prompt preview: %s", agent.sys_prompt[:500].replace("\n", "\\n"))
             LOGGER.info(
                 "Estimated participation tendency: %s (score=%.3f)",
                 PARTICIPATION_TENDENCY_LABELS[participation_tendency],
                 participation_score,
+            )
+            LOGGER.info(
+                "Program participation gate: passed=%s probability=%.3f draw=%.3f",
+                gate_decision.passed,
+                gate_decision.probability,
+                gate_decision.draw,
             )
             LOGGER.info("Selected memory count: %d", len(selected))
             for memory in selected:
@@ -389,16 +429,58 @@ class SingleEventSimulator:
                     memory.get("mark", "general_memory"),
                     _safe_text(memory.get("content"))[:220].replace("\n", " "),
                 )
-            LOGGER.info("Event message:\n%s", build_event_message(event, selected, participation_tendency))
+            if gate_decision.passed:
+                LOGGER.info("Event message:\n%s", build_event_message(event, selected, participation_tendency))
+            else:
+                LOGGER.info("Program participation gate skipped this agent; no LLM message would be sent.")
 
-    async def _run_one_agent(self, event: dict[str, Any], agent_record: AgentRecord, run_id: str) -> dict[str, Any]:
+    async def _run_one_agent(
+        self,
+        event: dict[str, Any],
+        agent_record: AgentRecord,
+        run_id: str,
+        participation_gate: ParticipationGateDecision,
+    ) -> dict[str, Any]:
         agent_started_at = time.perf_counter()
         selected_memories = select_memories(event, agent_record.memories)
         participation_tendency, _participation_score = estimate_participation_tendency(agent_record.profile)
-        event_message = build_event_message(event, selected_memories, participation_tendency)
-        base_row = self._build_base_result_row(event, agent_record, run_id)
+        base_row = self._build_base_result_row(event, agent_record, run_id, participation_gate)
+
+        if not participation_gate.passed:
+            agent_elapsed = time.perf_counter() - agent_started_at
+            LOGGER.info(
+                "Agent %s skipped by program participation gate in %.2fs (probability=%.3f draw=%.3f).",
+                agent_record.agent_id,
+                agent_elapsed,
+                participation_gate.probability,
+                participation_gate.draw,
+            )
+            return {
+                **base_row,
+                "participate": False,
+                "action_type": "ignore",
+                "emotion_label": "mixed",
+                "emotion_intensity": 0,
+                "stance_label": "neutral",
+                "stance_intensity": 0,
+                "reaction_text": "",
+                "reason": "程序概率门控判定该用户不参与本事件讨论，未调用 LLM 生成内容。",
+                "raw_output": json.dumps(
+                    {
+                        "program_participation_gate": {
+                            "probability": round(participation_gate.probability, 4),
+                            "draw": round(participation_gate.draw, 4),
+                            "passed": participation_gate.passed,
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "parse_status": "success",
+                "error_message": "",
+            }
 
         try:
+            event_message = build_event_message(event, selected_memories, participation_tendency)
             raw_output, reaction = await self._call_agentscope(agent_record, event_message, selected_memories)
             agent_elapsed = time.perf_counter() - agent_started_at
             row = {**base_row, **reaction.model_dump()}
@@ -503,25 +585,35 @@ class SingleEventSimulator:
         structured = getattr(response, "metadata", {}).get("structured_output") if getattr(response, "metadata", None) else None
         raw_output = json.dumps(getattr(response, "metadata", {}), ensure_ascii=False)
         if structured:
-            LOGGER.info(
-                "Agent %s first model call returned structured output in %.2fs.",
-                agent_record.agent_id,
-                first_call_elapsed,
-            )
-            return raw_output, normalize_structured_output(structured)
+            reaction = normalize_structured_output(structured)
+            if not _is_participating_reaction(reaction):
+                parse_status = "participation_gate_mismatch"
+                error_message = "Program gate passed, but model returned a non-participating reaction."
+            else:
+                LOGGER.info(
+                    "Agent %s first model call returned structured output in %.2fs.",
+                    agent_record.agent_id,
+                    first_call_elapsed,
+                )
+                return raw_output, reaction
+        else:
+            raw_text = _safe_text(getattr(response, "content", "")) or raw_output
+            reaction, parse_status, error_message = parse_reaction_json(raw_text)
+            if reaction is not None and _is_participating_reaction(reaction):
+                LOGGER.info(
+                    "Agent %s first model call returned parseable participating text in %.2fs.",
+                    agent_record.agent_id,
+                    first_call_elapsed,
+                )
+                return raw_text, reaction
+            if reaction is not None:
+                parse_status = "participation_gate_mismatch"
+                error_message = "Program gate passed, but model returned a non-participating reaction."
 
-        raw_text = _safe_text(getattr(response, "content", "")) or raw_output
-        reaction, parse_status, error_message = parse_reaction_json(raw_text)
-        if reaction is not None:
-            LOGGER.info(
-                "Agent %s first model call returned parseable text in %.2fs.",
-                agent_record.agent_id,
-                first_call_elapsed,
-            )
-            return raw_text, reaction
-
+        if structured:
+            raw_text = raw_output
         LOGGER.warning(
-            "Agent %s first model call was unparseable after %.2fs; retrying. status=%s error=%s",
+            "Agent %s first model call did not produce a valid participating reaction after %.2fs; retrying. status=%s error=%s",
             agent_record.agent_id,
             first_call_elapsed,
             parse_status,
@@ -529,7 +621,8 @@ class SingleEventSimulator:
         )
         retry_msg = Msg(
             "user",
-            "上一次输出无法解析。请只输出一个严格 JSON 对象，字段和值必须满足指定 schema，不要添加任何额外文字。"
+            "上一次输出未能满足要求。程序已判定该用户会参与本事件讨论；请只输出一个严格 JSON 对象，"
+            "participate 必须为 true，action_type 必须为 comment、repost 或 repost_with_comment，reaction_text 不能为空。"
             "字符串内部如需引用短语，请使用中文引号“”，不要使用未转义的英文双引号。",
             "user",
         )
@@ -543,34 +636,46 @@ class SingleEventSimulator:
         )
         retry_raw = json.dumps(getattr(retry_response, "metadata", {}), ensure_ascii=False)
         if retry_structured:
-            LOGGER.info(
-                "Agent %s retry model call returned structured output in %.2fs.",
-                agent_record.agent_id,
-                retry_call_elapsed,
+            retry_reaction = normalize_structured_output(retry_structured)
+            if _is_participating_reaction(retry_reaction):
+                LOGGER.info(
+                    "Agent %s retry model call returned structured participating output in %.2fs.",
+                    agent_record.agent_id,
+                    retry_call_elapsed,
+                )
+                return retry_raw, retry_reaction
+            raise ReactionParseError(
+                "Program gate passed, but retry returned a non-participating structured reaction.",
+                raw_output=retry_raw,
             )
-            return retry_raw, normalize_structured_output(retry_structured)
         retry_text = _safe_text(getattr(retry_response, "content", "")) or retry_raw
         retry_reaction, retry_status, retry_error = parse_reaction_json(retry_text)
-        if retry_reaction is None:
+        if retry_reaction is None or not _is_participating_reaction(retry_reaction):
             LOGGER.warning(
-                "Agent %s retry model call remained unparseable after %.2fs. status=%s error=%s",
+                "Agent %s retry model call failed participation validation after %.2fs. status=%s error=%s",
                 agent_record.agent_id,
                 retry_call_elapsed,
                 retry_status,
                 retry_error,
             )
             raise ReactionParseError(
-                f"JSON parse failed: {retry_error or error_message}; status={retry_status or parse_status}",
+                f"Participating JSON parse failed: {retry_error or error_message}; status={retry_status or parse_status}",
                 raw_output=retry_text,
             )
         LOGGER.info(
-            "Agent %s retry model call returned parseable text in %.2fs.",
+            "Agent %s retry model call returned parseable participating text in %.2fs.",
             agent_record.agent_id,
             retry_call_elapsed,
         )
         return retry_text, retry_reaction
 
-    def _build_base_result_row(self, event: dict[str, Any], agent: AgentRecord, run_id: str) -> dict[str, Any]:
+    def _build_base_result_row(
+        self,
+        event: dict[str, Any],
+        agent: AgentRecord,
+        run_id: str,
+        participation_gate: ParticipationGateDecision,
+    ) -> dict[str, Any]:
         profile = agent.profile
         participation_tendency, participation_score = estimate_participation_tendency(profile)
         return {
@@ -590,6 +695,9 @@ class SingleEventSimulator:
             "participation_tendency": participation_tendency,
             # "participation_tendency_label": PARTICIPATION_TENDENCY_LABELS[participation_tendency],
             "participation_tendency_score": round(participation_score, 4),
+            "participation_gate_probability": round(participation_gate.probability, 4),
+            "participation_gate_draw": round(participation_gate.draw, 4),
+            "participation_gate_passed": participation_gate.passed,
             "model_name": self.model_name,
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }

@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", dest="resume", action="store_true", default=True, help="Skip completed event_id + agent_id rows.")
     parser.add_argument("--no-resume", dest="resume", action="store_false", help="Do not skip completed rows.")
     parser.add_argument("--dry-run", action="store_true", help="Inspect prompts and messages without calling a model.")
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None, help="Seed for model generation, random agent sampling, and participation gating.")
     parser.add_argument(
         "--concurrency",
         type=int,
