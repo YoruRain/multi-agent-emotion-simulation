@@ -181,7 +181,7 @@ class SingleEventSimulator:
         overwrite: bool = False,
         resume: bool = True,
         dry_run: bool = False,
-        concurrency: int = 1,
+        concurrency: int | None = None,
         run_id: str | None = None,
     ) -> Path | None:
         event = get_event_by_id(event_id, self.paths.events_path)
@@ -199,9 +199,6 @@ class SingleEventSimulator:
             self._log_dry_run(event, agents[: min(3, len(agents))])
             return None
 
-        if concurrency != 1:
-            LOGGER.warning("concurrency=%s was requested, but MVP execution is serial; using concurrency=1.", concurrency)
-
         run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         base_output_dir = output_dir or self.paths.output_dir
         run_output_dir = base_output_dir / run_id
@@ -213,17 +210,49 @@ class SingleEventSimulator:
         if overwrite and reactions_path.exists():
             reactions_path.unlink()
 
-        with reactions_path.open("a", encoding="utf-8", newline="\n") as file:
-            for index, agent in enumerate(agents, start=1):
-                key = (event_id, agent.agent_id)
-                if key in completed:
-                    LOGGER.info("Skipping completed result for event=%s agent=%s", event_id, agent.agent_id)
-                    continue
+        pending_agents: list[tuple[int, AgentRecord]] = []
+        for index, agent in enumerate(agents, start=1):
+            key = (event_id, agent.agent_id)
+            if key in completed:
+                LOGGER.info("Skipping completed result for event=%s agent=%s", event_id, agent.agent_id)
+                continue
+            pending_agents.append((index, agent))
 
+        if pending_agents:
+            effective_concurrency = len(pending_agents) if concurrency is None else concurrency
+            if effective_concurrency < 1:
+                raise ValueError("concurrency must be >= 1 or None for unlimited agent-level concurrency.")
+            effective_concurrency = min(effective_concurrency, len(pending_agents))
+            LOGGER.info(
+                "Running %d pending agents with agent-level concurrency=%d.",
+                len(pending_agents),
+                effective_concurrency,
+            )
+        else:
+            effective_concurrency = 1
+            LOGGER.info("No pending agents to run for event=%s.", event_id)
+
+        semaphore = asyncio.Semaphore(effective_concurrency)
+
+        async def run_agent_with_limit(index: int, agent: AgentRecord) -> dict[str, Any]:
+            async with semaphore:
                 LOGGER.info("Running agent %d/%d: %s", index, len(agents), agent.agent_id)
-                row = await self._run_one_agent(event, agent, run_id)
+                return await self._run_one_agent(event, agent, run_id)
+
+        with reactions_path.open("a", encoding="utf-8", newline="\n") as file:
+            tasks = [asyncio.create_task(run_agent_with_limit(index, agent)) for index, agent in pending_agents]
+            done_count = 0
+            for task in asyncio.as_completed(tasks):
+                row = await task
                 file.write(json.dumps(row, ensure_ascii=False) + "\n")
                 file.flush()
+                done_count += 1
+                LOGGER.info(
+                    "Completed pending agent %d/%d: %s",
+                    done_count,
+                    len(pending_agents),
+                    row.get("agent_id", "unknown"),
+                )
 
         analyze_results(reactions_path, summary_report_path)
         LOGGER.info("Simulation output: %s", reactions_path)
