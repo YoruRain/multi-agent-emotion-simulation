@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 ActionType = Literal["ignore", "comment", "repost", "repost_with_comment"]
 EmotionLabel = Literal["anger", "sadness", "fear", "joy", "disgust", "disappointment", "surprise", "sympathy", "confusion", "admiration", "mixed"]
 StanceLabel = Literal["favor", "against", "neutral", "mixed", "unclear"]
+ALLOWED_REPOST_TEXTS = {"", "转发", "转发微博"}
 STRING_FIELD_ORDER = [
     "action_type",
     "emotion_label",
@@ -34,16 +35,23 @@ class ReactionSchema(BaseModel):
 
     @model_validator(mode="after")
     def validate_ignore_consistency(self) -> "ReactionSchema":
+        text = self.reaction_text.strip()
         if not self.participate:
             if self.action_type != "ignore":
                 raise ValueError("action_type must be 'ignore' when participate is false")
-            if self.reaction_text != "":
+            if text != "":
                 raise ValueError("reaction_text must be empty when participate is false")
             if self.emotion_intensity != 0 or self.stance_intensity != 0:
                 raise ValueError("emotion_intensity and stance_intensity must be 0 when participate is false")
         elif self.action_type == "ignore":
             raise ValueError("action_type cannot be 'ignore' when participate is true")
+        elif self.action_type == "repost" and not is_valid_repost_text(text):
+            raise ValueError("reaction_text must be empty or a very short repost placeholder when action_type is 'repost'; use 'repost_with_comment' for substantive comments")
         return self
+
+
+def is_valid_repost_text(text: str) -> bool:
+    return text.strip() in ALLOWED_REPOST_TEXTS
 
 
 def _strip_markdown_fence(text: str) -> str:

@@ -22,7 +22,7 @@ from .agent_loader import (
     load_agent_records,
 )
 from .event_loader import DEFAULT_EVENTS_PATH, get_event_by_id
-from .reaction_schema import ReactionSchema, normalize_structured_output, parse_reaction_json
+from .reaction_schema import ReactionSchema, is_valid_repost_text, normalize_structured_output, parse_reaction_json
 from .result_analyzer import analyze_results
 
 LOGGER = logging.getLogger(__name__)
@@ -188,7 +188,12 @@ def decide_participation(profile: dict[str, Any], rng: random.Random) -> Partici
 
 
 def _is_participating_reaction(reaction: ReactionSchema) -> bool:
-    return reaction.participate and reaction.action_type != "ignore" and bool(_safe_text(reaction.reaction_text))
+    if not reaction.participate or reaction.action_type == "ignore":
+        return False
+    reaction_text = _safe_text(reaction.reaction_text)
+    if reaction.action_type == "repost":
+        return is_valid_repost_text(reaction_text)
+    return bool(reaction_text)
 
 
 def select_memories(event: dict[str, Any], memories: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
@@ -264,7 +269,9 @@ def build_event_message(
         f"{memory_snippets}\n\n"
         "【输出要求】\n"
         "不要出现“根据画像”“作为 Agent”“模型认为”等元话语。\n"
-        "participate 必须为 true，action_type 必须为 comment、repost 或 repost_with_comment 之一，reaction_text 不能为空。\n"
+        "participate 必须为 true，action_type 必须为 comment、repost 或 repost_with_comment 之一。\n"
+        "如果 action_type 为 repost，reaction_text 必须为空字符串，或仅为“转发”“转发微博”这类极短占位；如果包含实质评论，必须使用 repost_with_comment。\n"
+        "如果 action_type 为 comment 或 repost_with_comment，reaction_text 不能为空。\n"
         "reaction_text 应控制在 10～80 个中文字符之间，除非该用户历史记忆明显具有长文表达风格。\n"
         "微博式表达可以包含疑问、讽刺、感叹或简短评价，但不要写成评论文章。\n"
         "所有字符串值都必须是合法 JSON 字符串；如需引用短语，请优先使用中文引号“”，不要直接使用未转义的英文双引号。"
@@ -622,7 +629,9 @@ class SingleEventSimulator:
         retry_msg = Msg(
             "user",
             "上一次输出未能满足要求。程序已判定该用户会参与本事件讨论；请只输出一个严格 JSON 对象，"
-            "participate 必须为 true，action_type 必须为 comment、repost 或 repost_with_comment，reaction_text 不能为空。"
+            "participate 必须为 true，action_type 必须为 comment、repost 或 repost_with_comment。"
+            "若 action_type 为 repost，reaction_text 只能为空字符串或极短转发占位；若有实质评论，必须使用 repost_with_comment。"
+            "若 action_type 为 comment 或 repost_with_comment，reaction_text 不能为空。"
             "字符串内部如需引用短语，请使用中文引号“”，不要使用未转义的英文双引号。",
             "user",
         )
