@@ -136,6 +136,56 @@ def parse_json_response(content: str) -> dict[str, Any]:
     raise ValueError(f"Could not parse a valid JSON object. Errors: {' | '.join(errors)}")
 
 
+def normalize_emotion_label(raw: dict[str, Any]) -> dict[str, Any]:
+    task = raw.get("task_output_layer") or {}
+    appraisal = raw.get("appraisal_layer") or {}
+
+    label = task.get("emotion_label")
+    if not isinstance(label, str):
+        return raw
+
+    label = label.strip().lower()
+    intensity = task.get("emotion_intensity", 0)
+    norm_violation = appraisal.get("norm_violation")
+
+    if label == "disapproval":
+        # disapproval is disfavor/opposition and is mainly represented by stance_label=against.
+        # Avoid inventing an emotion when the emotional intensity is low.
+        if isinstance(intensity, int) and intensity <= 1:
+            task["emotion_label"] = "none"
+        elif norm_violation == "high":
+            task["emotion_label"] = "disgust"
+        else:
+            task["emotion_label"] = "disappointment"
+
+    elif label == "sarcasm":
+        # sarcasm is an expression style, not an emotion.
+        task["emotion_label"] = "mixed"
+        if task.get("argument_type") in {None, "", "unclear"}:
+            task["argument_type"] = "sarcasm"
+
+    elif label == "amusement":
+        # If mocking/amusement becomes analytically important, consider adding it formally later.
+        task["emotion_label"] = "joy"
+
+    elif label == "agreement":
+        # agreement is an argument_type, not an emotion_label.
+        task["emotion_label"] = "none"
+        if task.get("argument_type") in {None, "", "unclear"}:
+            task["argument_type"] = "agreement"
+        if task.get("stance_label") in {None, "", "unclear"}:
+            task["stance_label"] = "favor"
+
+    elif label == "frustration":
+        # Frustration/impatience/irritation is usually folded into disappointment or anger.
+        if isinstance(intensity, int) and intensity >= 3:
+            task["emotion_label"] = "anger"
+        else:
+            task["emotion_label"] = "disappointment"
+
+    return raw
+
+
 def validate_analysis(raw_data: dict[str, Any], expected_comment_id: str) -> CommentAnalysis:
     try:
         result = CommentAnalysis.model_validate(raw_data)
@@ -209,6 +259,7 @@ async def analyze_with_retries(
         try:
             content = await call_deepseek(client, config, sample)
             parsed = parse_json_response(content)
+            parsed = normalize_emotion_label(parsed)
             analysis = validate_analysis(parsed, sample.comment_id)
             analyzed_at = now_iso()
             return make_jsonl_record(sample, analysis, config, analyzed_at)
