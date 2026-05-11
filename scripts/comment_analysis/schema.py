@@ -181,6 +181,7 @@ class RoleLayer(BaseModel):
         "person",
         "institution",
         "group",
+        "society",
         "policy",
         "media",
         "commenter_self",
@@ -200,6 +201,7 @@ class RoleLayer(BaseModel):
         "institution",
         "group",
         "policy",
+        "society", 
         "media",
         "commenter_self",
         "other_commenter",
@@ -225,6 +227,7 @@ class AppraisalLayer(BaseModel):
     focus_type: Literal[
         "event",
         "behavior",
+        "policy", 
         "object",
         "mixed",
         "unclear",
