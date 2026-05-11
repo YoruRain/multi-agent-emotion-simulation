@@ -29,3 +29,7 @@ GraduationProject.code-workspace
 misc/
 
 models/
+
+*.ps1
+
+AGENTS.md
