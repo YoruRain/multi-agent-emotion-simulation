@@ -132,7 +132,7 @@ def load_agent_records(
             continue
 
         if memory_record is None:
-            LOGGER.warning("Agent %s has no memories; continuing with an empty memory list.", agent_id)
+            # LOGGER.warning("Agent %s has no memories; continuing with an empty memory list.", agent_id)
             memories: list[dict[str, Any]] = []
         else:
             raw_memories = memory_record.get("memories", [])

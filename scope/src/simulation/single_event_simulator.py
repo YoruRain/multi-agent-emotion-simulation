@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,10 +61,27 @@ class ParticipationGateDecision:
 
 def configure_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-    )
+    log_dir = PROJECT_ROOT / ".log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    script_name = Path(sys.argv[0]).stem or "simulation"
+    log_path = log_dir / f"{script_name}.log"
+    log_format = logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
+
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(level)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(log_format)
+    root_logger.addHandler(console_handler)
+
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(log_format)
+    root_logger.addHandler(file_handler)
+
+    LOGGER.info("Logging to %s", log_path)
 
 
 def _safe_text(value: Any, default: str = "") -> str:
