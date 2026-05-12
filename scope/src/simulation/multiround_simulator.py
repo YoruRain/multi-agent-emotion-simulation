@@ -24,6 +24,11 @@ from .agent_state import (
     score_to_emotion_label,
     score_to_stance_label,
 )
+from .emotion_dynamics import (
+    aggregate_neighbor_influence,
+    build_event_influence_scores,
+    update_agent_state_with_dynamics,
+)
 from .event_loader import DEFAULT_EVENTS_PATH, get_event_by_id
 from .interaction_engine import ContextComment, InteractionEngine
 from .interaction_schema import InteractionRecord, save_interactions_csv
@@ -106,6 +111,8 @@ class MultiRoundSimulator:
 
         if self.config.use_llm:
             LOGGER.warning("use_llm=True is reserved for later stages; using fallback rules in this MVP.")
+        if self.config.enable_emotion_dynamics and not self.config.enable_interactions:
+            LOGGER.info("emotion dynamics enabled, neighbor influence disabled because interactions are disabled")
 
         run_output_dir = self.config.output_dir / self.run_id
         if run_output_dir.exists() and not self.config.overwrite:
@@ -154,6 +161,15 @@ class MultiRoundSimulator:
                 graphml_path = ""
                 LOGGER.warning("%s", exc)
 
+        dynamics_summary = self._build_dynamics_summary(
+            event,
+            initial_states,
+            current_states,
+            metrics_list,
+            all_interactions,
+        )
+        self._write_json(run_output_dir / "dynamics_summary.json", dynamics_summary)
+
         final_metrics = metrics_list[-1] if metrics_list else {}
         LOGGER.info("Multi-round simulation output: %s", run_output_dir)
         return {
@@ -168,6 +184,9 @@ class MultiRoundSimulator:
             "interactions_path": interactions_path,
             "graphml_path": graphml_path,
             "interaction_count": len(all_interactions),
+            "avg_abs_emotion_delta": final_metrics.get("avg_abs_emotion_delta", 0.0),
+            "avg_abs_stance_delta": final_metrics.get("avg_abs_stance_delta", 0.0),
+            "dynamics_summary_path": str(run_output_dir / "dynamics_summary.json"),
             "dry_run": False,
         }
 
@@ -196,11 +215,21 @@ class MultiRoundSimulator:
         next_states: list[AgentState] = []
         active_reactions: list[dict[str, Any]] = []
         round_comments: list[ContextComment] = []
+        event_influence = build_event_influence_scores(event)
 
         for state in current_states:
             is_active = state.agent_id in active_agent_ids
             reaction = generate_fallback_reaction(replace(state, is_active=is_active), event, round_id)
             next_state = self._update_state_from_reaction(state, reaction, round_id, is_active)
+            if self.config.enable_emotion_dynamics:
+                own_reaction = reaction if is_active else None
+                next_state = self._apply_emotion_dynamics(
+                    state,
+                    next_state,
+                    own_reaction,
+                    {},
+                    event_influence,
+                )
             next_states.append(next_state)
             if is_active:
                 active_reactions.append(self._build_active_reaction_row(next_state, reaction, round_id))
@@ -237,10 +266,12 @@ class MultiRoundSimulator:
         kol_speakers = self.interaction_engine.select_kol_speakers(current_states, self.config)
         regular_candidates = self.interaction_engine.select_regular_candidates(current_states, kol_speakers, self.config)
         next_state_by_id: dict[str, AgentState] = {}
+        reaction_by_id: dict[str, dict[str, Any]] = {}
         active_reactions: list[dict[str, Any]] = []
         round_interactions: list[InteractionRecord] = []
         round_comments: list[ContextComment] = []
         context_counts: list[int] = []
+        event_influence = build_event_influence_scores(event)
 
         for state in kol_speakers:
             reaction = generate_fallback_reaction(replace(state, is_active=True), event, round_id)
@@ -252,6 +283,7 @@ class MultiRoundSimulator:
                 state_update_reason="本轮作为高影响力用户优先发声，状态根据自身表达轻微更新",
             )
             next_state_by_id[state.agent_id] = next_state
+            reaction_by_id[state.agent_id] = reaction
             active_reactions.append(
                 self._build_active_reaction_row(
                     next_state,
@@ -295,6 +327,7 @@ class MultiRoundSimulator:
                 state_update_reason=reason,
             )
             next_state_by_id[state.agent_id] = next_state
+            reaction_by_id[state.agent_id] = reaction
             active_reactions.append(
                 self._build_active_reaction_row(
                     next_state,
@@ -323,12 +356,39 @@ class MultiRoundSimulator:
             )
 
         next_states: list[AgentState] = []
+        influence_state_by_id = {state.agent_id: state for state in current_states}
+        influence_state_by_id.update(next_state_by_id)
         for state in current_states:
             next_state = next_state_by_id.get(state.agent_id)
             if next_state is None:
                 reaction = generate_fallback_reaction(replace(state, is_active=False), event, round_id)
                 next_state = self._update_state_from_reaction(state, reaction, round_id, is_active=False)
+            if self.config.enable_emotion_dynamics:
+                neighbor_influence = aggregate_neighbor_influence(
+                    state.agent_id,
+                    round_interactions,
+                    influence_state_by_id,
+                )
+                next_state = self._apply_emotion_dynamics(
+                    state,
+                    next_state,
+                    reaction_by_id.get(state.agent_id),
+                    neighbor_influence,
+                    event_influence,
+                )
             next_states.append(next_state)
+
+        if self.config.enable_emotion_dynamics:
+            final_state_by_id = {state.agent_id: state for state in next_states}
+            for interaction in round_interactions:
+                source_state = final_state_by_id.get(interaction.source_agent_id)
+                target_state = final_state_by_id.get(interaction.target_agent_id)
+                if source_state is not None:
+                    interaction.source_emotion_score = source_state.emotion_score
+                    interaction.source_stance_score = source_state.stance_score
+                if target_state is not None:
+                    interaction.target_emotion_score_after = target_state.emotion_score
+                    interaction.target_stance_score_after = target_state.stance_score
 
         LOGGER.info(
             "Round %d finished: kol_speakers=%d regular_active=%d interactions=%d total_agents=%d",
@@ -401,6 +461,18 @@ class MultiRoundSimulator:
                 old_stance_score=old_stance,
                 new_stance_score=old_stance,
                 stance_delta=0.0,
+                neighbor_emotion_score=0.0,
+                neighbor_stance_score=0.0,
+                neighbor_influence_weight_sum=0.0,
+                neighbor_count=0,
+                high_influence_neighbor_count=0,
+                media_neighbor_count=0,
+                kol_neighbor_count=0,
+                event_emotion_score=0.0,
+                event_stance_score=0.0,
+                own_reaction_emotion_score=0.0,
+                own_reaction_stance_score=0.0,
+                dynamics_enabled=False,
                 state_update_reason="本轮未参与，状态保持稳定",
                 source="fallback_rule",
                 created_at=datetime.now().isoformat(timespec="seconds"),
@@ -423,6 +495,18 @@ class MultiRoundSimulator:
             old_stance_score=old_stance,
             new_stance_score=new_stance,
             stance_delta=round(new_stance - old_stance, 4),
+            neighbor_emotion_score=0.0,
+            neighbor_stance_score=0.0,
+            neighbor_influence_weight_sum=0.0,
+            neighbor_count=0,
+            high_influence_neighbor_count=0,
+            media_neighbor_count=0,
+            kol_neighbor_count=0,
+            event_emotion_score=0.0,
+            event_stance_score=0.0,
+            own_reaction_emotion_score=0.0,
+            own_reaction_stance_score=0.0,
+            dynamics_enabled=False,
             emotion_score=new_emotion,
             stance_score=new_stance,
             emotion_label=score_to_emotion_label(new_emotion),
@@ -439,6 +523,32 @@ class MultiRoundSimulator:
         if label == "negative" or label == "against":
             return -amount
         return 0.0
+
+    def _apply_emotion_dynamics(
+        self,
+        previous: AgentState,
+        base_state: AgentState,
+        own_reaction: dict[str, Any] | None,
+        neighbor_influence: dict[str, Any],
+        event_influence: dict[str, Any],
+    ) -> AgentState:
+        dynamic_state = update_agent_state_with_dynamics(
+            previous,
+            own_reaction,
+            neighbor_influence,
+            event_influence,
+            self.config,
+        )
+        return replace(
+            dynamic_state,
+            round_id=base_state.round_id,
+            is_active=base_state.is_active,
+            last_action_type=base_state.last_action_type,
+            last_reaction_text=base_state.last_reaction_text,
+            last_reason=base_state.last_reason,
+            source="emotion_dynamics",
+            created_at=datetime.now().isoformat(timespec="seconds"),
+        )
 
     @staticmethod
     def _build_interaction_metric_summary(
@@ -461,6 +571,73 @@ class MultiRoundSimulator:
             "agents_with_context_count": agents_with_context,
             "avg_context_comment_count": avg_context,
         }
+
+    def _build_dynamics_summary(
+        self,
+        event: dict[str, Any],
+        initial_states: list[AgentState],
+        final_states: list[AgentState],
+        metrics_list: list[dict[str, Any]],
+        interactions: list[InteractionRecord],
+    ) -> dict[str, Any]:
+        initial_avg_emotion = self._avg_state_score(initial_states, "emotion_score")
+        final_avg_emotion = self._avg_state_score(final_states, "emotion_score")
+        initial_avg_stance = self._avg_state_score(initial_states, "stance_score")
+        final_avg_stance = self._avg_state_score(final_states, "stance_score")
+        final_metrics = metrics_list[-1] if metrics_list else {}
+        return {
+            "run_id": self.run_id,
+            "event_id": self.config.event_id,
+            "topic": event.get("topic", ""),
+            "dynamics_enabled": self.config.enable_emotion_dynamics,
+            "interaction_enabled": self.config.enable_interactions,
+            "total_agents": len(initial_states),
+            "rounds": self.config.rounds,
+            "initial_avg_emotion_score": initial_avg_emotion,
+            "final_avg_emotion_score": final_avg_emotion,
+            "emotion_score_change": round(final_avg_emotion - initial_avg_emotion, 4),
+            "initial_avg_stance_score": initial_avg_stance,
+            "final_avg_stance_score": final_avg_stance,
+            "stance_score_change": round(final_avg_stance - initial_avg_stance, 4),
+            "final_emotion_distribution": self._label_distribution(final_states, "emotion_label"),
+            "final_stance_distribution": self._label_distribution(final_states, "stance_label"),
+            "max_emotion_volatility": max((float(item.get("emotion_volatility", 0.0) or 0.0) for item in metrics_list), default=0.0),
+            "max_stance_volatility": max((float(item.get("stance_volatility", 0.0) or 0.0) for item in metrics_list), default=0.0),
+            "final_polarization_score": final_metrics.get("polarization_score", 0.0),
+            "total_interaction_count": len(interactions),
+            "agents_ever_affected_by_neighbors": len(
+                {
+                    interaction.target_agent_id
+                    for interaction in interactions
+                    if interaction.target_agent_id
+                }
+            ),
+            "parameter_config": {
+                "self_retention": self.config.self_retention,
+                "social_influence_strength": self.config.social_influence_strength,
+                "event_influence_strength": self.config.event_influence_strength,
+                "reaction_influence_strength": self.config.reaction_influence_strength,
+                "stance_retention": self.config.stance_retention,
+                "social_stance_strength": self.config.social_stance_strength,
+                "event_stance_strength": self.config.event_stance_strength,
+                "reaction_stance_strength": self.config.reaction_stance_strength,
+                "enable_saturation_damping": self.config.enable_saturation_damping,
+                "saturation_damping_strength": self.config.saturation_damping_strength,
+            },
+        }
+
+    @staticmethod
+    def _avg_state_score(states: list[AgentState], field_name: str) -> float:
+        values = [float(getattr(state, field_name, 0.0) or 0.0) for state in states]
+        return round(sum(values) / len(values), 4) if values else 0.0
+
+    @staticmethod
+    def _label_distribution(states: list[AgentState], field_name: str) -> dict[str, int]:
+        distribution: dict[str, int] = {}
+        for state in states:
+            label = str(getattr(state, field_name, "") or "unknown")
+            distribution[label] = distribution.get(label, 0) + 1
+        return distribution
 
     def _build_active_reaction_row(
         self,

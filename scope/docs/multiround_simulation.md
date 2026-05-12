@@ -10,6 +10,8 @@
 模式，让高影响力 Agent 优先发声，普通 Agent 在观察评论上下文后响应，并记录 `source_agent -> target_agent`
 候选影响边。
 
+第三阶段已增加可选的情绪传染与立场演化机制：启用 `--enable-emotion-dynamics` 后，系统会基于互动边聚合邻居情绪和立场，结合 Agent 易感性、事件刺激和自身表达，更新每轮 `emotion_score` 与 `stance_score`，并输出可视化友好的演化指标。
+
 ## 与单事件仿真器的关系
 
 单事件仿真器负责“静态画像驱动的一次性反应生成”，入口为 `scope/run_single_event_simulation.py`。
@@ -33,6 +35,7 @@
 - 行为参数：`influence_score`、`susceptibility_score`、`activity_score`、`kol_sensitivity_score`、`media_dependency_score`、`repost_tendency_score`。
 - 状态字段：`emotion_score`、`stance_score`、`emotion_label`、`stance_label`、`is_active`、`last_action_type`、`last_reaction_text`、`last_reason`。
 - 状态变化：`old_emotion_score`、`new_emotion_score`、`emotion_delta`、`old_stance_score`、`new_stance_score`、`stance_delta`、`state_update_reason`。
+- 第三阶段动态字段：`neighbor_emotion_score`、`neighbor_stance_score`、`neighbor_count`、`neighbor_influence_weight_sum`、`event_emotion_score`、`event_stance_score`、`own_reaction_emotion_score`、`own_reaction_stance_score`、`dynamics_enabled`。
 - 其他字段：`source`、`created_at`。
 
 分数范围会自动裁剪：情绪和立场分数为 `[-1, 1]`，行为参数分数为 `[0, 1]`。
@@ -77,7 +80,45 @@
 - 再选择普通参与 Agent。
 - 普通 Agent 会看到本轮已发声评论中的前 `top_k_context_comments` 条代表性评论。
 - 系统为每条可见上下文评论记录一条候选影响边。
-- 本阶段只记录互动和轻微自身表达更新，不根据邻居正式传播情绪或立场。
+- 未启用情绪动态时，只记录互动和轻微自身表达更新，不根据邻居正式传播情绪或立场。
+
+启用情绪动态后，第 1 到 N 轮会在反应和互动边生成后执行状态演化：
+
+- 根据 `source_agent -> target_agent` 边聚合邻居情绪和立场。
+- 使用 `susceptibility_score` 调节社会影响强度。
+- 融合自身保持、邻居影响、事件刺激和自身表达。
+- 将更新后的 `emotion_score` 和 `stance_score` 裁剪到 `[-1, 1]`。
+- 记录每个 Agent 的变化量、邻居影响、事件影响、自身反应影响和中文解释。
+
+情绪更新公式：
+
+```text
+new_emotion =
+  self_retention * old_emotion
+  + social_influence_strength * susceptibility_score * neighbor_emotion_score
+  + event_influence_strength * event_emotion_score
+  + reaction_influence_strength * own_reaction_emotion_score
+```
+
+立场更新公式：
+
+```text
+new_stance =
+  stance_retention * old_stance
+  + social_stance_strength * susceptibility_score * neighbor_stance_score
+  + event_stance_strength * event_stance_score
+  + reaction_stance_strength * own_reaction_stance_score
+```
+
+默认启用饱和阻尼，避免分数过快撞到边界：
+
+```text
+delta = raw_new_score - old_score
+damping_factor = 1 - saturation_damping_strength * abs(old_score)
+new_score = old_score + delta * damping_factor
+```
+
+Reaction 层仍使用细粒度 `emotion_label`，例如 `anger`、`joy`、`mixed`；State 层使用连续 `emotion_score`，展示层可归纳为 `positive`、`neutral`、`negative`。
 
 ## 输入文件
 
@@ -108,6 +149,7 @@ scope/data/outputs/simulation/multiround/{run_id}/
 - `active_reactions.jsonl`：仅保存活跃 Agent 的规则反应。
 - `interactions.csv`：启用互动时输出，每行表示一条 `source_agent -> target_agent` 候选影响边。
 - `network.graphml`：启用互动时输出，基于 `interactions.csv` 构建的基础有向互动图。
+- `dynamics_summary.json`：每次运行输出，汇总初始/最终平均情绪和立场、分布、波动性、极化分数、邻居影响覆盖和动态参数。
 
 如果 `rounds=5` 且 Agent 数量为 30，`agent_states_by_round.csv` 应有 `30 * 6` 条数据行，不含表头。
 
@@ -169,6 +211,62 @@ conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py 
   --top-k-context-comments 3
 ```
 
+## 情绪动态运行示例
+
+```powershell
+conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py `
+  --event-id event_5177192956301027 `
+  --max-agents 30 `
+  --rounds 5 `
+  --use-llm false `
+  --seed 42 `
+  --enable-interactions `
+  --interaction-mode kol_first `
+  --kol-speaker-limit 5 `
+  --top-k-context-comments 3 `
+  --enable-emotion-dynamics
+```
+
+如果只开启 `--enable-emotion-dynamics` 而不启用 `--enable-interactions`，程序仍可运行，但邻居影响为 0，仅使用事件刺激和自身表达进行状态更新。
+
+## 情绪动态参数
+
+- `self_retention`：情绪自身保持系数，默认 `0.65`。
+- `social_influence_strength`：邻居情绪影响系数，默认 `0.25`。
+- `event_influence_strength`：事件情绪刺激系数，默认 `0.10`。
+- `reaction_influence_strength`：自身表达情绪影响系数，默认 `0.15`。
+- `stance_retention`：立场自身保持系数，默认 `0.75`。
+- `social_stance_strength`：邻居立场影响系数，默认 `0.20`。
+- `event_stance_strength`：事件立场刺激系数，默认 `0.10`。
+- `reaction_stance_strength`：自身表达立场影响系数，默认 `0.15`。
+- `saturation_damping_strength`：边界阻尼强度，默认 `0.5`。
+
+## 情绪和立场映射
+
+情绪基础分数：
+
+- 负向：`anger=-0.85`、`disgust=-0.80`、`fear=-0.70`、`sadness=-0.70`、`disappointment=-0.65`、`confusion=-0.25`。
+- 中性：`mixed=0.00`、`surprise=0.00`。
+- 正向：`sympathy=0.35`、`admiration=0.70`、`joy=0.75`。
+
+立场基础分数：
+
+- `favor`：强度 1 为 `0.50`，强度 2 为 `0.85`。
+- `against`：强度 1 为 `-0.50`，强度 2 为 `-0.85`。
+- `neutral`、`unclear`、`mixed`：`0.00`。
+
+## 新增动态指标
+
+`round_metrics.csv` 在原有字段基础上新增：
+
+- `emotion_volatility`、`stance_volatility`：本轮情绪和立场标准差。
+- `avg_abs_emotion_delta`、`avg_abs_stance_delta`：本轮平均绝对变化量。
+- `max_abs_emotion_delta`、`max_abs_stance_delta`：本轮最大绝对变化量。
+- `dominant_emotion_state`、`dominant_stance_state`：本轮占比最高状态标签。
+- `polarization_score`：立场分数标准差。
+- `avg_neighbor_count`、`agents_affected_by_neighbors`、`avg_neighbor_influence_weight`：邻居影响统计。
+- `dynamics_enabled`：本轮是否启用情绪动态。
+
 ## dry_run 示例
 
 ```powershell
@@ -185,8 +283,10 @@ conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py 
 
 ## 当前限制
 
-- 尚未实现情绪传染。
-- 当前互动是候选影响边记录，尚未根据邻居正式更新情绪和立场。
+- 情绪传染与立场演化为简化规则模型。
+- 未使用真实语义相似度模型。
+- 未进行真实世界预测。
+- 互动边仍是候选影响边，用于毕业设计原型展示和机制验证。
 - NetworkX 图为基础互动图，不包含复杂社区发现或传播路径分析。
 - `use_llm=True` 仅预留参数；本阶段主测 `use_llm=False` fallback 规则。
 

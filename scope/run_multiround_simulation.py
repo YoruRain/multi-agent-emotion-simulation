@@ -41,6 +41,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-llm", type=_parse_bool, default=False, help="Reserved; false uses fallback rules.")
     parser.add_argument("--max-llm-agents-per-round", type=int, default=None, help="Reserved for later LLM-enabled stages.")
     parser.add_argument("--enable-interactions", action="store_true", help="Enable KOL-first interaction recording.")
+    parser.add_argument("--enable-emotion-dynamics", action="store_true", help="Enable rule-based emotion and stance dynamics.")
+    parser.add_argument("--self-retention", type=float, default=0.65, help="Emotion self-retention coefficient.")
+    parser.add_argument("--social-influence-strength", type=float, default=0.25, help="Emotion neighbor influence coefficient.")
+    parser.add_argument("--event-influence-strength", type=float, default=0.10, help="Emotion event stimulus coefficient.")
+    parser.add_argument("--reaction-influence-strength", type=float, default=0.15, help="Emotion own-reaction coefficient.")
+    parser.add_argument("--stance-retention", type=float, default=0.75, help="Stance self-retention coefficient.")
+    parser.add_argument("--social-stance-strength", type=float, default=0.20, help="Stance neighbor influence coefficient.")
+    parser.add_argument("--event-stance-strength", type=float, default=0.10, help="Stance event stimulus coefficient.")
+    parser.add_argument("--reaction-stance-strength", type=float, default=0.15, help="Stance own-reaction coefficient.")
+    parser.add_argument("--disable-saturation-damping", action="store_true", help="Disable saturation damping near score boundaries.")
+    parser.add_argument("--saturation-damping-strength", type=float, default=0.5, help="Saturation damping strength.")
     parser.add_argument("--interaction-mode", default=None, choices=["none", "kol_first"], help="Interaction mode.")
     parser.add_argument("--kol-speaker-limit", type=int, default=5, help="Max high-influence speakers per round.")
     parser.add_argument("--top-k-context-comments", type=int, default=3, help="Max context comments visible to each regular agent.")
@@ -76,6 +87,17 @@ def main() -> None:
         resume=args.resume,
         dry_run=args.dry_run,
         enable_interactions=args.enable_interactions,
+        enable_emotion_dynamics=args.enable_emotion_dynamics,
+        self_retention=args.self_retention,
+        social_influence_strength=args.social_influence_strength,
+        event_influence_strength=args.event_influence_strength,
+        reaction_influence_strength=args.reaction_influence_strength,
+        stance_retention=args.stance_retention,
+        social_stance_strength=args.social_stance_strength,
+        event_stance_strength=args.event_stance_strength,
+        reaction_stance_strength=args.reaction_stance_strength,
+        enable_saturation_damping=not args.disable_saturation_damping,
+        saturation_damping_strength=args.saturation_damping_strength,
         interaction_mode=interaction_mode,
         kol_speaker_limit=args.kol_speaker_limit,
         top_k_context_comments=args.top_k_context_comments,
@@ -100,14 +122,18 @@ def main() -> None:
     print(f"run_id: {result['run_id']}")
     print(f"output_dir: {result['output_dir']}")
     print(f"agent_count: {result['agent_count']}")
+    print(f"total_agents: {result['agent_count']}")
     print(f"rounds: {result['rounds']}")
     print(f"interaction_mode: {result['interaction_mode']}")
     print(f"final_avg_emotion_score: {result['final_avg_emotion_score']}")
     print(f"final_avg_stance_score: {result['final_avg_stance_score']}")
+    print(f"avg_abs_emotion_delta: {result['avg_abs_emotion_delta']}")
+    print(f"avg_abs_stance_delta: {result['avg_abs_stance_delta']}")
     print(f"round_metrics_csv: {result['round_metrics_path']}")
     print(f"interactions_csv: {result['interactions_path']}")
     print(f"network_graphml: {result['graphml_path']}")
     print(f"interaction_count: {result['interaction_count']}")
+    print(f"dynamics_summary_json: {result['dynamics_summary_path']}")
 
 
 if __name__ == "__main__":

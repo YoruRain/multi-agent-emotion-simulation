@@ -38,6 +38,21 @@ def _avg(values: Iterable[float]) -> float:
     return round(sum(items) / len(items), 4) if items else 0.0
 
 
+def _stddev(values: Iterable[float]) -> float:
+    items = list(values)
+    if not items:
+        return 0.0
+    mean = sum(items) / len(items)
+    variance = sum((item - mean) ** 2 for item in items) / len(items)
+    return round(variance ** 0.5, 4)
+
+
+def _dominant_label(counts: dict[str, int], default: str) -> str:
+    if not counts:
+        return default
+    return sorted(counts.items(), key=lambda item: (item[1], item[0]), reverse=True)[0][0]
+
+
 def compute_round_metrics(
     states: list[AgentState],
     round_id: int,
@@ -53,6 +68,22 @@ def compute_round_metrics(
     support_count = sum(1 for state in states if _state_value(state, "stance_label") == "support")
     neutral_stance_count = sum(1 for state in states if _state_value(state, "stance_label") == "neutral")
     oppose_count = sum(1 for state in states if _state_value(state, "stance_label") == "against")
+    emotion_scores = [_as_float(_state_value(state, "emotion_score")) for state in states]
+    stance_scores = [_as_float(_state_value(state, "stance_score")) for state in states]
+    abs_emotion_deltas = [abs(_as_float(_state_value(state, "emotion_delta"))) for state in states]
+    abs_stance_deltas = [abs(_as_float(_state_value(state, "stance_delta"))) for state in states]
+    neighbor_counts = [_as_float(_state_value(state, "neighbor_count")) for state in states]
+    neighbor_weight_sums = [_as_float(_state_value(state, "neighbor_influence_weight_sum")) for state in states]
+    emotion_label_counts = {
+        "positive": positive_count,
+        "neutral": neutral_emotion_count,
+        "negative": negative_count,
+    }
+    stance_label_counts = {
+        "support": support_count,
+        "neutral": neutral_stance_count,
+        "against": oppose_count,
+    }
 
     first = states[0] if states else {}
     summary = interaction_summary or {}
@@ -91,6 +122,19 @@ def compute_round_metrics(
         "high_influence_interaction_count": int(summary.get("high_influence_interaction_count", 0) or 0),
         "agents_with_context_count": int(summary.get("agents_with_context_count", 0) or 0),
         "avg_context_comment_count": round(_as_float(summary.get("avg_context_comment_count", 0.0)), 4),
+        "emotion_volatility": _stddev(emotion_scores),
+        "stance_volatility": _stddev(stance_scores),
+        "avg_abs_emotion_delta": _avg(abs_emotion_deltas),
+        "avg_abs_stance_delta": _avg(abs_stance_deltas),
+        "max_abs_emotion_delta": round(max(abs_emotion_deltas), 4) if abs_emotion_deltas else 0.0,
+        "max_abs_stance_delta": round(max(abs_stance_deltas), 4) if abs_stance_deltas else 0.0,
+        "dominant_emotion_state": _dominant_label(emotion_label_counts, "neutral"),
+        "dominant_stance_state": _dominant_label(stance_label_counts, "neutral"),
+        "polarization_score": _stddev(stance_scores),
+        "avg_neighbor_count": _avg(neighbor_counts),
+        "agents_affected_by_neighbors": sum(1 for count in neighbor_counts if count > 0),
+        "avg_neighbor_influence_weight": _avg(neighbor_weight_sums),
+        "dynamics_enabled": any(_as_bool(_state_value(state, "dynamics_enabled", False)) for state in states),
     }
     return metrics
 
@@ -128,6 +172,19 @@ def save_round_metrics(metrics_list: list[dict[str, Any]], output_path: Path) ->
         "high_influence_interaction_count",
         "agents_with_context_count",
         "avg_context_comment_count",
+        "emotion_volatility",
+        "stance_volatility",
+        "avg_abs_emotion_delta",
+        "avg_abs_stance_delta",
+        "max_abs_emotion_delta",
+        "max_abs_stance_delta",
+        "dominant_emotion_state",
+        "dominant_stance_state",
+        "polarization_score",
+        "avg_neighbor_count",
+        "agents_affected_by_neighbors",
+        "avg_neighbor_influence_weight",
+        "dynamics_enabled",
     ]
     with output_path.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
