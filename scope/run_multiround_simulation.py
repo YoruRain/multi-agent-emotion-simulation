@@ -38,8 +38,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--active-agent-limit", type=int, default=None, help="Max active agents retained per round.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_MULTIROUND_OUTPUT_DIR)
     parser.add_argument("--seed", type=int, default=42, help="Seed for agent sampling and participation decisions.")
-    parser.add_argument("--use-llm", type=_parse_bool, default=False, help="Reserved; false uses fallback rules.")
-    parser.add_argument("--max-llm-agents-per-round", type=int, default=None, help="Reserved for later LLM-enabled stages.")
+    parser.add_argument("--use-llm", type=_parse_bool, default=False, help="Use LLM calls for budgeted active agents.")
+    parser.add_argument("--max-llm-agents-per-round", type=int, default=None, help="Max LLM calls per round; omitted means all active agents.")
+    parser.add_argument("--llm-concurrency", type=int, default=3, help="Max concurrent LLM calls inside one round.")
+    parser.add_argument("--model-name", default=None, help="Override MODEL_NAME for LLM calls.")
+    parser.add_argument("--base-url", default=None, help="Override BASE_URL for LLM calls.")
     parser.add_argument("--enable-interactions", action="store_true", help="Enable KOL-first interaction recording.")
     parser.add_argument("--enable-emotion-dynamics", action="store_true", help="Enable rule-based emotion and stance dynamics.")
     parser.add_argument("--self-retention", type=float, default=0.65, help="Emotion self-retention coefficient.")
@@ -81,6 +84,9 @@ def main() -> None:
         active_agent_limit=args.active_agent_limit,
         use_llm=args.use_llm,
         max_llm_agents_per_round=args.max_llm_agents_per_round,
+        llm_concurrency=args.llm_concurrency,
+        model_name=args.model_name,
+        base_url=args.base_url,
         seed=args.seed,
         output_dir=args.output_dir,
         overwrite=args.overwrite,

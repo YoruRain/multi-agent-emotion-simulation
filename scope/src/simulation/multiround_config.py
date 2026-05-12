@@ -19,6 +19,9 @@ class MultiRoundSimulationConfig:
     active_agent_limit: int | None = None
     use_llm: bool = False
     max_llm_agents_per_round: int | None = None
+    llm_concurrency: int = 3
+    model_name: str | None = None
+    base_url: str | None = None
     seed: int = 42
     overwrite: bool = False
     resume: bool = True
@@ -51,6 +54,8 @@ class MultiRoundSimulationConfig:
             raise ValueError("active_agent_limit must be >= 1 when provided.")
         if self.max_llm_agents_per_round is not None and self.max_llm_agents_per_round < 0:
             raise ValueError("max_llm_agents_per_round must be >= 0 when provided.")
+        if self.llm_concurrency < 1:
+            raise ValueError("llm_concurrency must be >= 1.")
         if self.kol_speaker_limit < 0:
             raise ValueError("kol_speaker_limit must be >= 0.")
         if self.top_k_context_comments < 0:

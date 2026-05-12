@@ -200,10 +200,9 @@ conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py 
 ```powershell
 conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py `
   --event-id event_5223110724290198 `
-  --max-agents 30 `
-  --memory-user-level core `
+  --max-agents 5 `
   --rounds 5 `
-  --use-llm false `
+  --use-llm true `
   --seed 42 `
   --enable-interactions `
   --interaction-mode kol_first `
@@ -216,9 +215,9 @@ conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py 
 ```powershell
 conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py `
   --event-id event_5177192956301027 `
-  --max-agents 30 `
+  --max-agents 5 `
   --rounds 5 `
-  --use-llm false `
+  --use-llm true `
   --seed 42 `
   --enable-interactions `
   --interaction-mode kol_first `

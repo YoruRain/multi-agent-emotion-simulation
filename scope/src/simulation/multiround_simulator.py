@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,9 +33,11 @@ from .emotion_dynamics import (
 from .event_loader import DEFAULT_EVENTS_PATH, get_event_by_id
 from .interaction_engine import ContextComment, InteractionEngine
 from .interaction_schema import InteractionRecord, save_interactions_csv
+from .llm_reaction_generator import LLMReactionGenerator, ReactionParseError
 from .multiround_analyzer import compute_round_metrics, save_round_metrics, states_to_csv
 from .multiround_config import MultiRoundSimulationConfig
 from .network_builder import build_interaction_graph, save_graphml
+from .single_event_simulator import build_event_message, estimate_participation_tendency, select_memories
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +55,16 @@ REACTION_EMOTION_LABELS = {
     "mixed",
 }
 NEGATIVE_REACTION_EMOTION_LABELS = {"anger", "sadness", "fear", "disgust", "disappointment"}
+
+
+@dataclass(frozen=True)
+class ReactionGenerationResult:
+    reaction: dict[str, Any]
+    source: str
+    llm_attempted: bool = False
+    parse_status: str = "not_attempted"
+    error_message: str = ""
+    raw_output: str = ""
 
 
 class MultiRoundSimulator:
@@ -72,6 +85,11 @@ class MultiRoundSimulator:
         self.events_path = events_path
         self.rng = random.Random(config.seed)
         self.interaction_engine = InteractionEngine(self.rng)
+        self.llm_generator = LLMReactionGenerator(
+            model_name=config.model_name,
+            base_url=config.base_url,
+            seed=config.seed,
+        )
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
 
     def run(self) -> dict[str, Any]:
@@ -110,7 +128,13 @@ class MultiRoundSimulator:
             }
 
         if self.config.use_llm:
-            LOGGER.warning("use_llm=True is reserved for later stages; using fallback rules in this MVP.")
+            LOGGER.info(
+                "LLM enabled for active agents: model=%s base_url=%s max_llm_agents_per_round=%s llm_concurrency=%d",
+                self.llm_generator.model_name,
+                self.llm_generator.base_url,
+                self.config.max_llm_agents_per_round,
+                self.config.llm_concurrency,
+            )
         if self.config.enable_emotion_dynamics and not self.config.enable_interactions:
             LOGGER.info("emotion dynamics enabled, neighbor influence disabled because interactions are disabled")
 
@@ -209,9 +233,30 @@ class MultiRoundSimulator:
         previous_round_comments: list[ContextComment] | None = None,
     ) -> tuple[list[AgentState], list[dict[str, Any]], list[InteractionRecord], dict[str, Any], list[ContextComment]]:
         if self.config.enable_interactions and self.config.interaction_mode == "kol_first":
-            return self._run_interaction_round(current_states, event, round_id, previous_round_comments or [])
+            return self._run_interaction_round(
+                current_states,
+                agent_by_id,
+                event,
+                round_id,
+                previous_round_comments or [],
+            )
 
         active_agent_ids = self._select_active_agents(current_states, agent_by_id, event)
+        active_states = [state for state in current_states if state.agent_id in active_agent_ids]
+        llm_agent_ids = self._select_llm_agent_ids(
+            [(state, "regular_agent") for state in active_states],
+        )
+        generated_by_id = self._run_async(
+            self._generate_reactions_for_active_states(
+                active_states,
+                agent_by_id,
+                event,
+                round_id,
+                llm_agent_ids,
+                speaker_type="regular_agent",
+                context_comments_by_id={},
+            ),
+        )
         next_states: list[AgentState] = []
         active_reactions: list[dict[str, Any]] = []
         round_comments: list[ContextComment] = []
@@ -219,8 +264,17 @@ class MultiRoundSimulator:
 
         for state in current_states:
             is_active = state.agent_id in active_agent_ids
-            reaction = generate_fallback_reaction(replace(state, is_active=is_active), event, round_id)
-            next_state = self._update_state_from_reaction(state, reaction, round_id, is_active)
+            generation = generated_by_id.get(state.agent_id)
+            if generation is None:
+                generation = self._fallback_generation_result(state, event, round_id, is_active)
+            reaction = generation.reaction
+            next_state = self._update_state_from_reaction(
+                state,
+                reaction,
+                round_id,
+                is_active,
+                source=generation.source,
+            )
             if self.config.enable_emotion_dynamics:
                 own_reaction = reaction if is_active else None
                 next_state = self._apply_emotion_dynamics(
@@ -232,7 +286,9 @@ class MultiRoundSimulator:
                 )
             next_states.append(next_state)
             if is_active:
-                active_reactions.append(self._build_active_reaction_row(next_state, reaction, round_id))
+                active_reactions.append(
+                    self._build_active_reaction_row(next_state, reaction, round_id, generation=generation),
+                )
                 round_comments.append(
                     self.interaction_engine.comment_from_state(
                         next_state,
@@ -259,6 +315,7 @@ class MultiRoundSimulator:
     def _run_interaction_round(
         self,
         current_states: list[AgentState],
+        agent_by_id: dict[str, AgentRecord],
         event: dict[str, Any],
         round_id: int,
         previous_round_comments: list[ContextComment],
@@ -272,15 +329,34 @@ class MultiRoundSimulator:
         round_comments: list[ContextComment] = []
         context_counts: list[int] = []
         event_influence = build_event_influence_scores(event)
+        llm_agent_ids = self._select_llm_agent_ids(
+            [(state, "kol_speaker") for state in kol_speakers]
+            + [(state, "regular_agent") for state in regular_candidates],
+        )
+        kol_generation_by_id = self._run_async(
+            self._generate_reactions_for_active_states(
+                kol_speakers,
+                agent_by_id,
+                event,
+                round_id,
+                llm_agent_ids,
+                speaker_type="kol_speaker",
+                context_comments_by_id={},
+            ),
+        )
 
         for state in kol_speakers:
-            reaction = generate_fallback_reaction(replace(state, is_active=True), event, round_id)
+            generation = kol_generation_by_id.get(state.agent_id)
+            if generation is None:
+                generation = self._fallback_generation_result(state, event, round_id, is_active=True)
+            reaction = generation.reaction
             next_state = self._update_state_from_reaction(
                 state,
                 reaction,
                 round_id,
                 is_active=True,
                 state_update_reason="本轮作为高影响力用户优先发声，状态根据自身表达轻微更新",
+                source=generation.source,
             )
             next_state_by_id[state.agent_id] = next_state
             reaction_by_id[state.agent_id] = reaction
@@ -291,6 +367,7 @@ class MultiRoundSimulator:
                     round_id,
                     speaker_type="kol_speaker",
                     context_comments=[],
+                    generation=generation,
                 )
             )
             round_comments.append(
@@ -308,12 +385,19 @@ class MultiRoundSimulator:
                 candidate_comments.extend(previous_round_comments)
             context_comments = self.interaction_engine.select_context_comments(state, candidate_comments, self.config)
             context_counts.append(len(context_comments))
-            reaction = generate_fallback_reaction(
-                replace(state, is_active=True),
-                event,
-                round_id,
-                context_comments=context_comments,
+            generation = self._run_async(
+                self._generate_reaction_for_state(
+                    state,
+                    agent_by_id.get(state.agent_id),
+                    event,
+                    round_id,
+                    is_active=True,
+                    use_llm_for_agent=state.agent_id in llm_agent_ids,
+                    context_comments=context_comments,
+                    speaker_type="regular_agent",
+                ),
             )
+            reaction = generation.reaction
             reason = (
                 "本轮参考评论区已有观点后参与表达，状态根据自身表达轻微更新"
                 if context_comments
@@ -325,6 +409,7 @@ class MultiRoundSimulator:
                 round_id,
                 is_active=True,
                 state_update_reason=reason,
+                source=generation.source,
             )
             next_state_by_id[state.agent_id] = next_state
             reaction_by_id[state.agent_id] = reaction
@@ -335,6 +420,7 @@ class MultiRoundSimulator:
                     round_id,
                     speaker_type="regular_agent",
                     context_comments=context_comments,
+                    generation=generation,
                 )
             )
             round_interactions.extend(
@@ -361,8 +447,15 @@ class MultiRoundSimulator:
         for state in current_states:
             next_state = next_state_by_id.get(state.agent_id)
             if next_state is None:
-                reaction = generate_fallback_reaction(replace(state, is_active=False), event, round_id)
-                next_state = self._update_state_from_reaction(state, reaction, round_id, is_active=False)
+                generation = self._fallback_generation_result(state, event, round_id, is_active=False)
+                reaction = generation.reaction
+                next_state = self._update_state_from_reaction(
+                    state,
+                    reaction,
+                    round_id,
+                    is_active=False,
+                    source=generation.source,
+                )
             if self.config.enable_emotion_dynamics:
                 neighbor_influence = aggregate_neighbor_influence(
                     state.agent_id,
@@ -406,6 +499,217 @@ class MultiRoundSimulator:
         )
         return next_states, active_reactions, round_interactions, summary, round_comments
 
+    @staticmethod
+    def _run_async(coro: Any) -> Any:
+        return asyncio.run(coro)
+
+    def _select_llm_agent_ids(self, candidates: list[tuple[AgentState, str]]) -> set[str]:
+        if not self.config.use_llm or not candidates:
+            return set()
+        if self.config.max_llm_agents_per_round is None:
+            return {state.agent_id for state, _speaker_type in candidates}
+        if self.config.max_llm_agents_per_round <= 0:
+            return set()
+
+        ranked = sorted(
+            candidates,
+            key=lambda item: self._llm_priority_key(item[0], item[1]),
+            reverse=True,
+        )
+        return {state.agent_id for state, _speaker_type in ranked[: self.config.max_llm_agents_per_round]}
+
+    def _llm_priority_key(self, state: AgentState, speaker_type: str) -> tuple[float, float, float, float, str]:
+        kol_rank = 1.0 if speaker_type == "kol_speaker" else 0.0
+        return (
+            kol_rank,
+            self.interaction_engine.speaker_score(state),
+            state.influence_score,
+            state.activity_score,
+            state.agent_id,
+        )
+
+    async def _generate_reactions_for_active_states(
+        self,
+        states: list[AgentState],
+        agent_by_id: dict[str, AgentRecord],
+        event: dict[str, Any],
+        round_id: int,
+        llm_agent_ids: set[str],
+        speaker_type: str,
+        context_comments_by_id: dict[str, list[ContextComment]],
+    ) -> dict[str, ReactionGenerationResult]:
+        semaphore = asyncio.Semaphore(self.config.llm_concurrency)
+
+        async def generate_one(state: AgentState) -> tuple[str, ReactionGenerationResult]:
+            async with semaphore:
+                result = await self._generate_reaction_for_state(
+                    state,
+                    agent_by_id.get(state.agent_id),
+                    event,
+                    round_id,
+                    is_active=True,
+                    use_llm_for_agent=state.agent_id in llm_agent_ids,
+                    context_comments=context_comments_by_id.get(state.agent_id, []),
+                    speaker_type=speaker_type,
+                )
+                return state.agent_id, result
+
+        pairs = await asyncio.gather(*(generate_one(state) for state in states))
+        return dict(pairs)
+
+    async def _generate_reaction_for_state(
+        self,
+        state: AgentState,
+        agent_record: AgentRecord | None,
+        event: dict[str, Any],
+        round_id: int,
+        is_active: bool,
+        use_llm_for_agent: bool,
+        context_comments: list[ContextComment] | None = None,
+        speaker_type: str = "regular_agent",
+    ) -> ReactionGenerationResult:
+        if not is_active:
+            return self._fallback_generation_result(state, event, round_id, is_active=False, context_comments=context_comments)
+        if not use_llm_for_agent:
+            return self._fallback_generation_result(state, event, round_id, is_active=True, context_comments=context_comments)
+
+        fallback_state = replace(state, is_active=True)
+        fallback = generate_fallback_reaction(fallback_state, event, round_id, context_comments=context_comments)
+        if agent_record is None:
+            return self._llm_fallback_result(
+                fallback,
+                parse_status="failed",
+                error_message="Missing agent record for LLM generation.",
+            )
+        if not self.llm_generator.api_key:
+            return self._llm_fallback_result(
+                fallback,
+                parse_status="failed",
+                error_message="Missing API key. Set DEEPSEEK_API_KEY or OPENAI_API_KEY before running live simulation.",
+            )
+
+        selected_memories = select_memories(event, agent_record.memories)
+        event_message = self._build_multiround_event_message(
+            event,
+            agent_record,
+            state,
+            selected_memories,
+            round_id,
+            speaker_type,
+            context_comments or [],
+        )
+        try:
+            raw_output, reaction = await self.llm_generator.generate(agent_record, event_message, selected_memories)
+        except ReactionParseError as exc:
+            return self._llm_fallback_result(
+                fallback,
+                parse_status="parse_failed",
+                error_message=str(exc),
+                raw_output=exc.raw_output,
+            )
+        except Exception as exc:  # noqa: BLE001 - multi-round simulations should continue on LLM failure
+            LOGGER.exception("LLM generation failed for agent %s in round %d: %s", state.agent_id, round_id, exc)
+            return self._llm_fallback_result(
+                fallback,
+                parse_status="failed",
+                error_message=str(exc),
+            )
+
+        return ReactionGenerationResult(
+            reaction=reaction.model_dump(),
+            source="llm",
+            llm_attempted=True,
+            parse_status="success",
+            error_message="",
+            raw_output=raw_output,
+        )
+
+    def _fallback_generation_result(
+        self,
+        state: AgentState,
+        event: dict[str, Any],
+        round_id: int,
+        is_active: bool,
+        context_comments: list[ContextComment] | None = None,
+    ) -> ReactionGenerationResult:
+        return ReactionGenerationResult(
+            reaction=generate_fallback_reaction(
+                replace(state, is_active=is_active),
+                event,
+                round_id,
+                context_comments=context_comments,
+            ),
+            source="fallback_rule",
+            llm_attempted=False,
+            parse_status="not_attempted",
+            error_message="",
+            raw_output="",
+        )
+
+    @staticmethod
+    def _llm_fallback_result(
+        fallback: dict[str, Any],
+        parse_status: str,
+        error_message: str,
+        raw_output: str = "",
+    ) -> ReactionGenerationResult:
+        return ReactionGenerationResult(
+            reaction={
+                **fallback,
+                "reason": f"{fallback.get('reason', '')}；LLM调用失败，已降级为规则生成。",
+            },
+            source="llm_fallback",
+            llm_attempted=True,
+            parse_status=parse_status,
+            error_message=error_message,
+            raw_output=raw_output,
+        )
+
+    def _build_multiround_event_message(
+        self,
+        event: dict[str, Any],
+        agent_record: AgentRecord,
+        state: AgentState,
+        selected_memories: list[dict[str, Any]],
+        round_id: int,
+        speaker_type: str,
+        context_comments: list[ContextComment],
+    ) -> str:
+        participation_tendency, _score = estimate_participation_tendency(agent_record.profile)
+        base_message = build_event_message(event, selected_memories, participation_tendency)
+        context_text = self._format_context_comments(context_comments)
+        speaker_label = "高影响力用户优先发声" if speaker_type == "kol_speaker" else "普通活跃用户参与讨论"
+        return (
+            f"{base_message}\n\n"
+            "【多轮仿真上下文】\n"
+            f"当前轮次：第 {round_id} 轮。\n"
+            f"本轮角色：{speaker_label}。\n"
+            f"上一轮自身情绪状态：{state.emotion_label}（分数 {state.emotion_score:.3f}）。\n"
+            f"上一轮自身立场状态：{state.stance_label}（分数 {state.stance_score:.3f}）。\n"
+            f"上一轮可见行为：{state.last_action_type}；上一轮表达：{state.last_reaction_text or '无'}。\n\n"
+            "【本轮可见评论上下文】\n"
+            f"{context_text}\n\n"
+            "【多轮输出要求】\n"
+            "本轮程序已判定该用户会参与讨论，participate 必须为 true。"
+            "请结合可见评论上下文生成自然的微博式表达；如果没有可见评论，则只基于事件和个人历史风格表达。"
+        )
+
+    @staticmethod
+    def _format_context_comments(context_comments: list[ContextComment]) -> str:
+        if not context_comments:
+            return "本轮暂无可见评论上下文。"
+        lines: list[str] = []
+        for index, comment in enumerate(context_comments, start=1):
+            text = str(comment.get("reaction_text") or "").strip()
+            source_agent_id = str(comment.get("source_agent_id") or "unknown")
+            source_role = str(comment.get("source_propagation_role") or "")
+            source_verified = str(comment.get("source_verified_type_name") or "")
+            lines.append(
+                f"{index}. agent_id={source_agent_id} role={source_role or 'unknown'} "
+                f"verified={source_verified or 'unknown'}：{text or '无文本'}"
+            )
+        return "\n".join(lines)
+
     def _select_active_agents(
         self,
         states: list[AgentState],
@@ -444,6 +748,7 @@ class MultiRoundSimulator:
         round_id: int,
         is_active: bool,
         state_update_reason: str | None = None,
+        source: str = "fallback_rule",
     ) -> AgentState:
         old_emotion = previous.emotion_score
         old_stance = previous.stance_score
@@ -474,7 +779,7 @@ class MultiRoundSimulator:
                 own_reaction_stance_score=0.0,
                 dynamics_enabled=False,
                 state_update_reason="本轮未参与，状态保持稳定",
-                source="fallback_rule",
+                source=source,
                 created_at=datetime.now().isoformat(timespec="seconds"),
             )
 
@@ -512,7 +817,7 @@ class MultiRoundSimulator:
             emotion_label=score_to_emotion_label(new_emotion),
             stance_label=score_to_stance_label(new_stance),
             state_update_reason=state_update_reason or "本轮主动参与评论，状态根据自身表达轻微更新",
-            source="fallback_rule",
+            source=source,
             created_at=datetime.now().isoformat(timespec="seconds"),
         )
 
@@ -646,8 +951,10 @@ class MultiRoundSimulator:
         round_id: int,
         speaker_type: str = "regular_agent",
         context_comments: list[ContextComment] | None = None,
+        generation: ReactionGenerationResult | None = None,
     ) -> dict[str, Any]:
         context_comments = context_comments or []
+        generation = generation or ReactionGenerationResult(reaction=reaction, source="fallback_rule")
         context_agent_ids = [
             str(comment.get("source_agent_id"))
             for comment in context_comments
@@ -671,7 +978,11 @@ class MultiRoundSimulator:
             "stance_intensity": reaction.get("stance_intensity", 1),
             "reaction_text": reaction.get("reaction_text", ""),
             "reason": reaction.get("reason", ""),
-            "source": "fallback_rule",
+            "source": generation.source,
+            "llm_attempted": generation.llm_attempted,
+            "parse_status": generation.parse_status,
+            "error_message": generation.error_message,
+            "raw_output": generation.raw_output,
             "speaker_type": speaker_type,
             "context_agent_ids": ",".join(context_agent_ids),
             "context_comment_count": len(context_comments),
@@ -709,6 +1020,30 @@ class MultiRoundSimulator:
                 state.stance_label,
                 state.stance_score,
             )
+        if self.config.use_llm:
+            speaker_candidates = [(state, "regular_agent") for state in states]
+            if self.config.enable_interactions and self.config.interaction_mode == "kol_first":
+                speaker_candidates = [(state, "kol_speaker") for state in states]
+            llm_agent_ids = self._select_llm_agent_ids(speaker_candidates)
+            LOGGER.info(
+                "DRY RUN: no model calls will be made. LLM budget would allow %d candidate(s) per round.",
+                len(llm_agent_ids),
+            )
+            ranked = sorted(
+                speaker_candidates,
+                key=lambda item: self._llm_priority_key(item[0], item[1]),
+                reverse=True,
+            )[:5]
+            LOGGER.info("DRY RUN top LLM priority candidates:")
+            for state, speaker_type in ranked:
+                LOGGER.info(
+                    "  agent_id=%s speaker_type=%s selected_by_budget=%s influence=%.3f activity=%.3f",
+                    state.agent_id,
+                    speaker_type,
+                    state.agent_id in llm_agent_ids,
+                    state.influence_score,
+                    state.activity_score,
+                )
         if self.config.enable_interactions:
             scored = sorted(
                 states,
