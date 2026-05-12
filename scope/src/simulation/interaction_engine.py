@@ -33,7 +33,9 @@ class InteractionEngine:
                 candidates.append((score, state))
 
         candidates.sort(key=lambda item: (item[0], item[1].influence_score, item[1].agent_id), reverse=True)
-        limit = max(0, config.kol_speaker_limit)
+        total_agents = len(agent_states)
+        population_limit = max(1, int(total_agents * 0.3))
+        limit = min(max(0, config.kol_speaker_limit), population_limit)
         if config.active_agent_limit is not None:
             limit = min(limit, config.active_agent_limit)
         return [state for _, state in candidates[:limit]]
