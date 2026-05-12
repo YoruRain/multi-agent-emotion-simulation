@@ -38,7 +38,11 @@ def _avg(values: Iterable[float]) -> float:
     return round(sum(items) / len(items), 4) if items else 0.0
 
 
-def compute_round_metrics(states: list[AgentState], round_id: int) -> dict[str, Any]:
+def compute_round_metrics(
+    states: list[AgentState],
+    round_id: int,
+    interaction_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compute aggregate state metrics for one simulation round."""
 
     total_agents = len(states)
@@ -51,7 +55,8 @@ def compute_round_metrics(states: list[AgentState], round_id: int) -> dict[str, 
     oppose_count = sum(1 for state in states if _state_value(state, "stance_label") == "against")
 
     first = states[0] if states else {}
-    return {
+    summary = interaction_summary or {}
+    metrics = {
         "run_id": _state_value(first, "run_id", ""),
         "event_id": _state_value(first, "event_id", ""),
         "topic": _state_value(first, "topic", ""),
@@ -79,7 +84,15 @@ def compute_round_metrics(states: list[AgentState], round_id: int) -> dict[str, 
         "avg_activity_score_active": _avg(
             _as_float(_state_value(state, "activity_score")) for state in active_states
         ),
+        "kol_speaker_count": int(summary.get("kol_speaker_count", 0) or 0),
+        "regular_active_count": int(summary.get("regular_active_count", 0) or 0),
+        "interaction_count": int(summary.get("interaction_count", 0) or 0),
+        "avg_interaction_weight": round(_as_float(summary.get("avg_interaction_weight", 0.0)), 4),
+        "high_influence_interaction_count": int(summary.get("high_influence_interaction_count", 0) or 0),
+        "agents_with_context_count": int(summary.get("agents_with_context_count", 0) or 0),
+        "avg_context_comment_count": round(_as_float(summary.get("avg_context_comment_count", 0.0)), 4),
     }
+    return metrics
 
 
 def save_round_metrics(metrics_list: list[dict[str, Any]], output_path: Path) -> None:
@@ -108,6 +121,13 @@ def save_round_metrics(metrics_list: list[dict[str, Any]], output_path: Path) ->
         "oppose_ratio",
         "avg_influence_score_active",
         "avg_activity_score_active",
+        "kol_speaker_count",
+        "regular_active_count",
+        "interaction_count",
+        "avg_interaction_weight",
+        "high_influence_interaction_count",
+        "agents_with_context_count",
+        "avg_context_comment_count",
     ]
     with output_path.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)

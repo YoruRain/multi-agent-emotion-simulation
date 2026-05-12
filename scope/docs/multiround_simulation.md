@@ -6,6 +6,10 @@
 
 当前实现服务于毕业设计 MVP 展示：优先保证稳定、可解释、可复现，不追求复杂传播模型。
 
+第二阶段已增加可选的 Agent 互动机制：启用 `--enable-interactions` 后，多轮仿真会采用 `kol_first`
+模式，让高影响力 Agent 优先发声，普通 Agent 在观察评论上下文后响应，并记录 `source_agent -> target_agent`
+候选影响边。
+
 ## 与单事件仿真器的关系
 
 单事件仿真器负责“静态画像驱动的一次性反应生成”，入口为 `scope/run_single_event_simulation.py`。
@@ -67,6 +71,14 @@
 - 活跃 Agent 根据自身表达做很小的情绪和立场更新。
 - 未活跃 Agent 状态保持不变。
 
+启用互动后，第 1 到 N 轮会改为：
+
+- 先按 `influence_score`、`activity_score`、传播角色和认证类型选择本轮 KOL / 高影响力发声者。
+- 再选择普通参与 Agent。
+- 普通 Agent 会看到本轮已发声评论中的前 `top_k_context_comments` 条代表性评论。
+- 系统为每条可见上下文评论记录一条候选影响边。
+- 本阶段只记录互动和轻微自身表达更新，不根据邻居正式传播情绪或立场。
+
 ## 输入文件
 
 默认输入目录为 `scope/data/inputs/`：
@@ -94,8 +106,40 @@ scope/data/outputs/simulation/multiround/{run_id}/
 - `agent_states_by_round.csv`：所有轮次所有 Agent 状态。
 - `round_metrics.csv`：每轮群体统计。
 - `active_reactions.jsonl`：仅保存活跃 Agent 的规则反应。
+- `interactions.csv`：启用互动时输出，每行表示一条 `source_agent -> target_agent` 候选影响边。
+- `network.graphml`：启用互动时输出，基于 `interactions.csv` 构建的基础有向互动图。
 
 如果 `rounds=5` 且 Agent 数量为 30，`agent_states_by_round.csv` 应有 `30 * 6` 条数据行，不含表头。
+
+### `interactions.csv` 字段
+
+核心字段包括：
+
+- 基础信息：`run_id`、`event_id`、`topic`、`round_id`。
+- 互动双方：`source_agent_id`、`target_agent_id`、`source_user_id`、`target_user_id`。
+- 互动类型和权重：`interaction_type`、`weight`。
+- 上下文信息：`source_action_type`、`source_reaction_text`、`target_action_type`、`target_reaction_text`、`context_rank`。
+- 状态快照：`source_emotion_score`、`target_emotion_score_before`、`target_emotion_score_after`、`source_stance_score`、`target_stance_score_before`、`target_stance_score_after`。
+- 画像字段：`source_influence_score`、`target_susceptibility_score`、`target_kol_sensitivity_score`、`target_media_dependency_score`、`source_verified_type_name`、`source_propagation_role`、`target_propagation_role`。
+- 其他字段：`reason`、`source`、`created_at`。
+
+`interaction_type` 当前主要包括 `same_round_context`、`reply`、`repost`。`weight` 会裁剪到 `[0.01, 1.00]`，供后续情绪传染阶段复用。
+
+### `network.graphml` 字段
+
+节点 ID 使用 `agent_id`。节点属性包括：
+
+- `agent_id`、`user_id`、`memory_user_level`、`verified_type_name`、`propagation_role`、`influence_level`。
+- `influence_score`、`susceptibility_score`、`activity_score`、`kol_sensitivity_score`、`media_dependency_score`。
+- `final_emotion_score`、`final_stance_score`、`final_emotion_label`、`final_stance_label`。
+
+边会合并同一对 `source_agent_id -> target_agent_id` 的多轮互动，并保存：
+
+- `weight`、`weight_sum`、`interaction_count`。
+- `first_round`、`last_round`、`round_id`。
+- `interaction_type`、`interaction_types`、`source_action_type`、`target_action_type`。
+
+如果环境未安装 `networkx`，主仿真结果仍会保留，日志会提示需要安装 `networkx` 才能写出 `network.graphml`。
 
 ## 正式运行示例
 
@@ -107,6 +151,22 @@ conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py 
   --rounds 5 `
   --use-llm false `
   --seed 42
+```
+
+## 互动模式运行示例
+
+```powershell
+conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py `
+  --event-id event_5223110724290198 `
+  --max-agents 30 `
+  --memory-user-level core `
+  --rounds 5 `
+  --use-llm false `
+  --seed 42 `
+  --enable-interactions `
+  --interaction-mode kol_first `
+  --kol-speaker-limit 5 `
+  --top-k-context-comments 3
 ```
 
 ## dry_run 示例
@@ -121,20 +181,17 @@ conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py 
 ```
 
 `dry_run` 只加载事件和 Agent，构建初始 `AgentState` 并打印前 3 个状态摘要，不执行多轮循环，也不写输出目录。
+启用互动时，`dry_run` 还会展示前 5 个候选 KOL speakers、一个 `context_comments` 示例和预计输出文件列表。
 
 ## 当前限制
 
-- 尚未实现 Agent 之间的真实互动。
-- 尚未实现 KOL 先发声。
 - 尚未实现情绪传染。
-- 尚未实现 NetworkX 网络分析。
+- 当前互动是候选影响边记录，尚未根据邻居正式更新情绪和立场。
+- NetworkX 图为基础互动图，不包含复杂社区发现或传播路径分析。
 - `use_llm=True` 仅预留参数；本阶段主测 `use_llm=False` fallback 规则。
 
 ## 后续扩展方向
 
-- 加入 KOL 先发声和普通 Agent 后响应。
-- 构建 `interactions.csv`。
-- 根据 `influence_score` 和 `susceptibility_score` 计算互动权重。
 - 引入情绪传染与立场演化公式。
-- 构建 NetworkX 传播网络。
+- 扩展 NetworkX 传播网络分析指标。
 - 接入 Streamlit 可视化面板。

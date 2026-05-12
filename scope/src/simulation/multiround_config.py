@@ -26,6 +26,10 @@ class MultiRoundSimulationConfig:
     enable_interactions: bool = False
     enable_emotion_dynamics: bool = False
     interaction_mode: str = "none"
+    kol_speaker_limit: int = 5
+    top_k_context_comments: int = 3
+    allow_previous_round_context: bool = False
+    max_context_comment_length: int = 80
 
     def __post_init__(self) -> None:
         if self.rounds < 0:
@@ -36,6 +40,16 @@ class MultiRoundSimulationConfig:
             raise ValueError("active_agent_limit must be >= 1 when provided.")
         if self.max_llm_agents_per_round is not None and self.max_llm_agents_per_round < 0:
             raise ValueError("max_llm_agents_per_round must be >= 0 when provided.")
+        if self.kol_speaker_limit < 0:
+            raise ValueError("kol_speaker_limit must be >= 0.")
+        if self.top_k_context_comments < 0:
+            raise ValueError("top_k_context_comments must be >= 0.")
+        if self.max_context_comment_length < 1:
+            raise ValueError("max_context_comment_length must be >= 1.")
+        if self.interaction_mode not in {"none", "kol_first"}:
+            raise ValueError("interaction_mode must be 'none' or 'kol_first'.")
+        if self.enable_interactions and self.interaction_mode == "none":
+            object.__setattr__(self, "interaction_mode", "kol_first")
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

@@ -25,8 +25,11 @@ from .agent_state import (
     score_to_stance_label,
 )
 from .event_loader import DEFAULT_EVENTS_PATH, get_event_by_id
+from .interaction_engine import ContextComment, InteractionEngine
+from .interaction_schema import InteractionRecord, save_interactions_csv
 from .multiround_analyzer import compute_round_metrics, save_round_metrics, states_to_csv
 from .multiround_config import MultiRoundSimulationConfig
+from .network_builder import build_interaction_graph, save_graphml
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +66,7 @@ class MultiRoundSimulator:
         self.sys_prompts_path = sys_prompts_path
         self.events_path = events_path
         self.rng = random.Random(config.seed)
+        self.interaction_engine = InteractionEngine(self.rng)
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
 
     def run(self) -> dict[str, Any]:
@@ -96,6 +100,7 @@ class MultiRoundSimulator:
                 "output_dir": "",
                 "agent_count": len(initial_states),
                 "rounds": self.config.rounds,
+                "interaction_mode": self.config.interaction_mode,
                 "dry_run": True,
             }
 
@@ -113,20 +118,41 @@ class MultiRoundSimulator:
 
         all_states: list[AgentState] = list(initial_states)
         active_reactions: list[dict[str, Any]] = []
+        all_interactions: list[InteractionRecord] = []
         metrics_list: list[dict[str, Any]] = [compute_round_metrics(initial_states, 0)]
 
         current_states = list(initial_states)
         agent_by_id = {agent.agent_id: agent for agent in agents}
+        previous_round_comments: list[ContextComment] = []
         for round_id in range(1, self.config.rounds + 1):
-            next_states, round_reactions = self._run_round(current_states, agent_by_id, event, round_id)
+            next_states, round_reactions, round_interactions, round_summary, previous_round_comments = self._run_round(
+                current_states,
+                agent_by_id,
+                event,
+                round_id,
+                previous_round_comments,
+            )
             all_states.extend(next_states)
             active_reactions.extend(round_reactions)
-            metrics_list.append(compute_round_metrics(next_states, round_id))
+            all_interactions.extend(round_interactions)
+            metrics_list.append(compute_round_metrics(next_states, round_id, round_summary))
             current_states = next_states
 
         states_to_csv(all_states, run_output_dir / "agent_states_by_round.csv")
         save_round_metrics(metrics_list, run_output_dir / "round_metrics.csv")
         self._write_active_reactions(active_reactions, run_output_dir / "active_reactions.jsonl")
+        interactions_path = ""
+        graphml_path = ""
+        if self.config.enable_interactions:
+            interactions_path = str(run_output_dir / "interactions.csv")
+            save_interactions_csv(all_interactions, run_output_dir / "interactions.csv")
+            graphml_path = str(run_output_dir / "network.graphml")
+            try:
+                graph = build_interaction_graph(all_states, all_interactions)
+                save_graphml(graph, run_output_dir / "network.graphml")
+            except RuntimeError as exc:
+                graphml_path = ""
+                LOGGER.warning("%s", exc)
 
         final_metrics = metrics_list[-1] if metrics_list else {}
         LOGGER.info("Multi-round simulation output: %s", run_output_dir)
@@ -138,6 +164,10 @@ class MultiRoundSimulator:
             "final_avg_emotion_score": final_metrics.get("avg_emotion_score", 0.0),
             "final_avg_stance_score": final_metrics.get("avg_stance_score", 0.0),
             "round_metrics_path": str(run_output_dir / "round_metrics.csv"),
+            "interaction_mode": self.config.interaction_mode,
+            "interactions_path": interactions_path,
+            "graphml_path": graphml_path,
+            "interaction_count": len(all_interactions),
             "dry_run": False,
         }
 
@@ -157,10 +187,15 @@ class MultiRoundSimulator:
         agent_by_id: dict[str, AgentRecord],
         event: dict[str, Any],
         round_id: int,
-    ) -> tuple[list[AgentState], list[dict[str, Any]]]:
+        previous_round_comments: list[ContextComment] | None = None,
+    ) -> tuple[list[AgentState], list[dict[str, Any]], list[InteractionRecord], dict[str, Any], list[ContextComment]]:
+        if self.config.enable_interactions and self.config.interaction_mode == "kol_first":
+            return self._run_interaction_round(current_states, event, round_id, previous_round_comments or [])
+
         active_agent_ids = self._select_active_agents(current_states, agent_by_id, event)
         next_states: list[AgentState] = []
         active_reactions: list[dict[str, Any]] = []
+        round_comments: list[ContextComment] = []
 
         for state in current_states:
             is_active = state.agent_id in active_agent_ids
@@ -169,6 +204,14 @@ class MultiRoundSimulator:
             next_states.append(next_state)
             if is_active:
                 active_reactions.append(self._build_active_reaction_row(next_state, reaction, round_id))
+                round_comments.append(
+                    self.interaction_engine.comment_from_state(
+                        next_state,
+                        reaction,
+                        round_id,
+                        self.config.max_context_comment_length,
+                    )
+                )
 
         LOGGER.info(
             "Round %d finished: active_agents=%d total_agents=%d",
@@ -176,7 +219,132 @@ class MultiRoundSimulator:
             len(active_reactions),
             len(next_states),
         )
-        return next_states, active_reactions
+        summary = self._build_interaction_metric_summary(
+            [],
+            kol_speaker_count=0,
+            regular_active_count=0,
+            context_counts=[],
+        )
+        return next_states, active_reactions, [], summary, round_comments
+
+    def _run_interaction_round(
+        self,
+        current_states: list[AgentState],
+        event: dict[str, Any],
+        round_id: int,
+        previous_round_comments: list[ContextComment],
+    ) -> tuple[list[AgentState], list[dict[str, Any]], list[InteractionRecord], dict[str, Any], list[ContextComment]]:
+        kol_speakers = self.interaction_engine.select_kol_speakers(current_states, self.config)
+        regular_candidates = self.interaction_engine.select_regular_candidates(current_states, kol_speakers, self.config)
+        next_state_by_id: dict[str, AgentState] = {}
+        active_reactions: list[dict[str, Any]] = []
+        round_interactions: list[InteractionRecord] = []
+        round_comments: list[ContextComment] = []
+        context_counts: list[int] = []
+
+        for state in kol_speakers:
+            reaction = generate_fallback_reaction(replace(state, is_active=True), event, round_id)
+            next_state = self._update_state_from_reaction(
+                state,
+                reaction,
+                round_id,
+                is_active=True,
+                state_update_reason="本轮作为高影响力用户优先发声，状态根据自身表达轻微更新",
+            )
+            next_state_by_id[state.agent_id] = next_state
+            active_reactions.append(
+                self._build_active_reaction_row(
+                    next_state,
+                    reaction,
+                    round_id,
+                    speaker_type="kol_speaker",
+                    context_comments=[],
+                )
+            )
+            round_comments.append(
+                self.interaction_engine.comment_from_state(
+                    next_state,
+                    reaction,
+                    round_id,
+                    self.config.max_context_comment_length,
+                )
+            )
+
+        for state in regular_candidates:
+            candidate_comments = list(round_comments)
+            if self.config.allow_previous_round_context:
+                candidate_comments.extend(previous_round_comments)
+            context_comments = self.interaction_engine.select_context_comments(state, candidate_comments, self.config)
+            context_counts.append(len(context_comments))
+            reaction = generate_fallback_reaction(
+                replace(state, is_active=True),
+                event,
+                round_id,
+                context_comments=context_comments,
+            )
+            reason = (
+                "本轮参考评论区已有观点后参与表达，状态根据自身表达轻微更新"
+                if context_comments
+                else "本轮主动参与评论，状态根据自身表达轻微更新"
+            )
+            next_state = self._update_state_from_reaction(
+                state,
+                reaction,
+                round_id,
+                is_active=True,
+                state_update_reason=reason,
+            )
+            next_state_by_id[state.agent_id] = next_state
+            active_reactions.append(
+                self._build_active_reaction_row(
+                    next_state,
+                    reaction,
+                    round_id,
+                    speaker_type="regular_agent",
+                    context_comments=context_comments,
+                )
+            )
+            round_interactions.extend(
+                self.interaction_engine.build_interaction_records(
+                    context_comments,
+                    state,
+                    next_state,
+                    reaction,
+                    self.config,
+                )
+            )
+            round_comments.append(
+                self.interaction_engine.comment_from_state(
+                    next_state,
+                    reaction,
+                    round_id,
+                    self.config.max_context_comment_length,
+                )
+            )
+
+        next_states: list[AgentState] = []
+        for state in current_states:
+            next_state = next_state_by_id.get(state.agent_id)
+            if next_state is None:
+                reaction = generate_fallback_reaction(replace(state, is_active=False), event, round_id)
+                next_state = self._update_state_from_reaction(state, reaction, round_id, is_active=False)
+            next_states.append(next_state)
+
+        LOGGER.info(
+            "Round %d finished: kol_speakers=%d regular_active=%d interactions=%d total_agents=%d",
+            round_id,
+            len(kol_speakers),
+            len(regular_candidates),
+            len(round_interactions),
+            len(next_states),
+        )
+        summary = self._build_interaction_metric_summary(
+            round_interactions,
+            kol_speaker_count=len(kol_speakers),
+            regular_active_count=len(regular_candidates),
+            context_counts=context_counts,
+        )
+        return next_states, active_reactions, round_interactions, summary, round_comments
 
     def _select_active_agents(
         self,
@@ -215,6 +383,7 @@ class MultiRoundSimulator:
         reaction: dict[str, Any],
         round_id: int,
         is_active: bool,
+        state_update_reason: str | None = None,
     ) -> AgentState:
         old_emotion = previous.emotion_score
         old_stance = previous.stance_score
@@ -258,7 +427,7 @@ class MultiRoundSimulator:
             stance_score=new_stance,
             emotion_label=score_to_emotion_label(new_emotion),
             stance_label=score_to_stance_label(new_stance),
-            state_update_reason="本轮主动参与评论，状态根据自身表达轻微更新",
+            state_update_reason=state_update_reason or "本轮主动参与评论，状态根据自身表达轻微更新",
             source="fallback_rule",
             created_at=datetime.now().isoformat(timespec="seconds"),
         )
@@ -271,12 +440,42 @@ class MultiRoundSimulator:
             return -amount
         return 0.0
 
+    @staticmethod
+    def _build_interaction_metric_summary(
+        interactions: list[InteractionRecord],
+        kol_speaker_count: int,
+        regular_active_count: int,
+        context_counts: list[int],
+    ) -> dict[str, Any]:
+        weights = [record.weight for record in interactions]
+        agents_with_context = sum(1 for count in context_counts if count > 0)
+        avg_context = round(sum(context_counts) / len(context_counts), 4) if context_counts else 0.0
+        return {
+            "kol_speaker_count": kol_speaker_count,
+            "regular_active_count": regular_active_count,
+            "interaction_count": len(interactions),
+            "avg_interaction_weight": round(sum(weights) / len(weights), 4) if weights else 0.0,
+            "high_influence_interaction_count": sum(
+                1 for record in interactions if record.source_influence_score >= 0.75
+            ),
+            "agents_with_context_count": agents_with_context,
+            "avg_context_comment_count": avg_context,
+        }
+
     def _build_active_reaction_row(
         self,
         state: AgentState,
         reaction: dict[str, Any],
         round_id: int,
+        speaker_type: str = "regular_agent",
+        context_comments: list[ContextComment] | None = None,
     ) -> dict[str, Any]:
+        context_comments = context_comments or []
+        context_agent_ids = [
+            str(comment.get("source_agent_id"))
+            for comment in context_comments
+            if comment.get("source_agent_id")
+        ]
         return {
             "run_id": state.run_id,
             "event_id": state.event_id,
@@ -296,6 +495,13 @@ class MultiRoundSimulator:
             "reaction_text": reaction.get("reaction_text", ""),
             "reason": reaction.get("reason", ""),
             "source": "fallback_rule",
+            "speaker_type": speaker_type,
+            "context_agent_ids": ",".join(context_agent_ids),
+            "context_comment_count": len(context_comments),
+            "influenced_by_high_influence": any(
+                float(comment.get("source_influence_score", 0.0) or 0.0) >= 0.75
+                for comment in context_comments
+            ),
         }
 
     @staticmethod
@@ -310,8 +516,7 @@ class MultiRoundSimulator:
             for record in records:
                 file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    @staticmethod
-    def _log_dry_run(event: dict[str, Any], states: list[AgentState]) -> None:
+    def _log_dry_run(self, event: dict[str, Any], states: list[AgentState]) -> None:
         LOGGER.info("DRY RUN: no multi-round loop will be executed.")
         LOGGER.info("Event: %s | %s", event.get("event_id"), event.get("topic"))
         for state in states[:3]:
@@ -327,9 +532,61 @@ class MultiRoundSimulator:
                 state.stance_label,
                 state.stance_score,
             )
+        if self.config.enable_interactions:
+            scored = sorted(
+                states,
+                key=lambda state: (
+                    self.interaction_engine.speaker_score(state),
+                    state.influence_score,
+                    state.agent_id,
+                ),
+                reverse=True,
+            )[:5]
+            LOGGER.info("DRY RUN candidate KOL speakers:")
+            for state in scored:
+                LOGGER.info(
+                    "  agent_id=%s influence=%.3f activity=%.3f role=%s verified=%s",
+                    state.agent_id,
+                    state.influence_score,
+                    state.activity_score,
+                    state.propagation_role,
+                    state.verified_type_name,
+                )
+            if len(scored) >= 2:
+                sample_comment = self.interaction_engine.comment_from_state(
+                    scored[0],
+                    {
+                        "action_type": "comment",
+                        "reaction_text": _reaction_text(scored[0].emotion_label, scored[0].stance_label, event, 1),
+                    },
+                    round_id=1,
+                    max_length=self.config.max_context_comment_length,
+                )
+                context = self.interaction_engine.select_context_comments(scored[1], [sample_comment], self.config)
+                LOGGER.info(
+                    "DRY RUN sample context_comments for agent_id=%s: %s",
+                    scored[1].agent_id,
+                    [
+                        {
+                            "source_agent_id": item.get("source_agent_id"),
+                            "reaction_text": item.get("reaction_text"),
+                            "context_rank": item.get("context_rank"),
+                        }
+                        for item in context
+                    ],
+                )
+            LOGGER.info(
+                "DRY RUN expected outputs: config.json, selected_event.json, agent_initial_states.csv, "
+                "agent_states_by_round.csv, round_metrics.csv, active_reactions.jsonl, interactions.csv, network.graphml"
+            )
 
 
-def generate_fallback_reaction(agent_state: AgentState, event: dict[str, Any], round_id: int) -> dict[str, Any]:
+def generate_fallback_reaction(
+    agent_state: AgentState,
+    event: dict[str, Any],
+    round_id: int,
+    context_comments: list[ContextComment] | None = None,
+) -> dict[str, Any]:
     reaction_emotion_label = _reaction_emotion_label(agent_state.emotion_label, event)
     reaction_stance_label = _reaction_stance_label(agent_state.stance_label)
     if not agent_state.is_active:
@@ -345,7 +602,7 @@ def generate_fallback_reaction(agent_state: AgentState, event: dict[str, Any], r
         }
 
     action_type = "repost_with_comment" if agent_state.repost_tendency_score >= 0.65 else "comment"
-    text = _reaction_text(agent_state.emotion_label, agent_state.stance_label, event, round_id)
+    text = _reaction_text(agent_state.emotion_label, agent_state.stance_label, event, round_id, context_comments)
     return {
         "participate": True,
         "action_type": action_type,
@@ -354,7 +611,11 @@ def generate_fallback_reaction(agent_state: AgentState, event: dict[str, Any], r
         "stance_label": reaction_stance_label,
         "stance_intensity": 1,
         "reaction_text": text,
-        "reason": "根据该用户活跃度和当前事件倾向生成的规则反应",
+        "reason": (
+            "根据该用户活跃度、当前事件倾向和可见评论上下文生成的规则反应"
+            if context_comments
+            else "根据该用户活跃度和当前事件倾向生成的规则反应"
+        ),
     }
 
 
@@ -395,8 +656,32 @@ def _reaction_stance_label(internal_stance_label: str) -> str:
     return "neutral"
 
 
-def _reaction_text(emotion_label: str, stance_label: str, event: dict[str, Any], round_id: int) -> str:
+def _reaction_text(
+    emotion_label: str,
+    stance_label: str,
+    event: dict[str, Any],
+    round_id: int,
+    context_comments: list[ContextComment] | None = None,
+) -> str:
     topic = str(event.get("topic") or "这件事").strip()
+    context_comments = context_comments or []
+    if context_comments:
+        has_high_influence = any(
+            float(comment.get("source_influence_score", 0.0) or 0.0) >= 0.75 for comment in context_comments
+        )
+        has_verified_source = any(
+            any(token in str(comment.get("source_verified_type_name") or "") for token in ("媒体", "政府", "机构"))
+            for comment in context_comments
+        )
+        if stance_label == "against" and has_high_influence:
+            return "前面说得有道理，这个解释确实还不够让人信服。"
+        if emotion_label == "negative":
+            return "看了前面的说法，感觉这事还是得继续追问清楚。"
+        if stance_label == "support" and has_verified_source:
+            return "如果通报内容属实，那这个处理方向还算明确。"
+        if stance_label == "neutral":
+            return "评论区分歧挺大，还是等更完整的信息吧。"
+
     templates = {
         ("negative", "against"): [
             "这事看着真的有点离谱，希望后续能给个清楚说法。",
