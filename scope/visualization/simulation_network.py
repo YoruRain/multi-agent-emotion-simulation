@@ -1,12 +1,9 @@
 from __future__ import annotations
-
-import tempfile
-from pathlib import Path
 from typing import Any
 
 import networkx as nx
 import pandas as pd
-import streamlit.components.v1 as components
+import streamlit as st
 
 from simulation_dashboard_utils import latest_states, round_numeric_columns, safe_round, truncate_text
 
@@ -177,11 +174,8 @@ def render_pyvis_network(
             )
             net.add_edge(source_id, target_id, value=max(weight_sum, 0.1), width=1 + min(7, weight_sum), title=title)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            html_path = Path(temp_dir) / "network.html"
-            net.write_html(str(html_path), notebook=False, open_browser=False)
-            html = html_path.read_text(encoding="utf-8")
-        components.html(html, height=height, scrolling=True)
+        html = net.generate_html(notebook=False)
+        st.iframe(html, height=height)
         return True, None
     except Exception as exc:
         return False, f"PyVis 渲染失败：{exc}"

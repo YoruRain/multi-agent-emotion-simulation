@@ -130,7 +130,7 @@ def show_file_status(data: RunData) -> None:
                 "实际文件名": path.name if path else "",
             }
         )
-    st.dataframe(pd.DataFrame(status_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(status_rows), width="stretch", hide_index=True)
 
 
 def build_run_command(params: dict[str, Any]) -> list[str]:
@@ -233,7 +233,7 @@ def render_chart(fig, missing_message: str) -> None:
     if fig is None:
         st.info(missing_message)
     else:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 
 def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | None, data: RunData) -> None:
@@ -273,13 +273,13 @@ def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | Non
     st.subheader("运行新仿真")
     col1, col2, col3 = st.columns(3)
     with col1:
-        event_id = st.text_input("event_id", value="event_5177192956301027")
-        max_agents = st.number_input("max_agents", min_value=5, max_value=200, value=30, step=1)
+        event_id = st.text_input("event_id", value="event_5194986460286423")
+        max_agents = st.number_input("max_agents", min_value=5, max_value=200, value=10, step=1)
     with col2:
         rounds = st.number_input("rounds", min_value=1, max_value=20, value=5, step=1)
         seed = st.number_input("seed", value=42, step=1)
     with col3:
-        use_llm = st.checkbox("use_llm", value=False)
+        use_llm = st.checkbox("use_llm", value=True)
         enable_interactions = st.checkbox("enable_interactions", value=True)
 
     with st.expander("高级运行参数", expanded=True):
@@ -323,33 +323,27 @@ def tab_overview(run_dir: Path | None, data: RunData) -> None:
         return
     summary = data.summary
     metrics = data.metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        metric_card("run_id", summary.get("run_id", run_dir.name))
-    with col2:
-        metric_card("event_id", summary.get("event_id", data.config.get("event_id", "")))
-    with col3:
-        metric_card("topic", summary.get("topic", data.selected_event.get("topic", "")))
-    with col4:
-        metric_card("动态演化", summary.get("dynamics_enabled", metric_value(summary, metrics, "dynamics_enabled", "")))
-    with col5:
-        metric_card("互动启用", summary.get("interaction_enabled", data.config.get("enable_interactions", "")))
+    event_id = summary.get("event_id") or data.selected_event.get("event_id") or data.config.get("event_id", "")
+    topic = summary.get("topic") or data.selected_event.get("topic", "")
+    event_context = data.selected_event.get("event_context", "")
 
-    metric_items = [
+    col1, col2 = st.columns(2)
+    with col1:
+        st.text_input("事件 ID", value=str(event_id or "暂无"), disabled=True)
+    with col2:
+        st.text_input("话题", value=str(topic or "暂无"), disabled=True)
+
+    st.text_area("事件背景", value=str(event_context or "暂无"), height=120, disabled=True)
+
+    overview_items = [
+        ("动态演化", summary.get("dynamics_enabled", metric_value(summary, metrics, "dynamics_enabled", ""))),
+        ("互动启用", summary.get("interaction_enabled", data.config.get("enable_interactions", ""))),
         ("Agent 数量", summary.get("total_agents", len(data.agents))),
         ("仿真轮数", summary.get("rounds", metric_value(summary, metrics, "round_id", ""))),
-        ("总互动边数", summary.get("total_interaction_count", len(data.interactions))),
-        ("受邻居影响 Agent 数", summary.get("agents_ever_affected_by_neighbors", "")),
-        ("初始平均情绪", summary.get("initial_avg_emotion_score", "")),
-        ("最终平均情绪", summary.get("final_avg_emotion_score", metric_value(summary, metrics, "avg_emotion_score", ""))),
-        ("初始平均立场", summary.get("initial_avg_stance_score", "")),
-        ("最终平均立场", summary.get("final_avg_stance_score", metric_value(summary, metrics, "avg_stance_score", ""))),
-        ("情绪变化量", summary.get("emotion_score_change", "")),
-        ("立场变化量", summary.get("stance_score_change", "")),
     ]
-    rows = st.columns(5)
-    for index, (label, value) in enumerate(metric_items):
-        with rows[index % 5]:
+    rows = st.columns(4)
+    for index, (label, value) in enumerate(overview_items):
+        with rows[index]:
             metric_card(label, value)
 
     st.info("本次仿真以热点事件为输入，初始化一批微博用户 Agent，在多轮评论区互动中模拟高影响力用户先发声、普通用户观察并响应，以及由互动边驱动的情绪传染与立场演化。")
@@ -424,7 +418,7 @@ def tab_agent_profile(data: RunData) -> None:
         "stance_label",
     ]
     existing = [column for column in table_cols if column in agents.columns]
-    st.dataframe(round_numeric_columns(agents[existing].copy(), 3), use_container_width=True, hide_index=True)
+    st.dataframe(round_numeric_columns(agents[existing].copy(), 3), width="stretch", hide_index=True)
 
 
 def tab_dynamics(data: RunData, show_round_zero: bool) -> None:
@@ -489,7 +483,7 @@ def tab_network(data: RunData, top_k: int, max_edges: int) -> None:
             "final_stance_score",
         ]
         existing = [column for column in display_cols if column in centrality.columns]
-        st.dataframe(centrality[existing].head(top_k), use_container_width=True, hide_index=True)
+        st.dataframe(centrality[existing].head(top_k), width="stretch", hide_index=True)
     else:
         st.info("无法计算中心性指标，可能是网络为空。")
 
@@ -538,17 +532,17 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
         st.markdown("**KOL speaker**")
         st.dataframe(
             prepare_comment_table(kol_reactions, comment_limit),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         st.markdown("**Regular agent**")
         st.dataframe(
             prepare_comment_table(regular_reactions, comment_limit),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
         with st.expander("该轮完整评论表"):
-            st.dataframe(round_numeric_columns(round_reactions, 3), use_container_width=True, hide_index=True)
+            st.dataframe(round_numeric_columns(round_reactions, 3), width="stretch", hide_index=True)
     else:
         st.info("缺少 active_reactions.jsonl 或 round_id，无法展示评论流。")
         selected_round = None
@@ -573,7 +567,7 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
             "neighbor_count",
             "state_update_reason",
         ]
-        st.dataframe(round_numeric_columns(agent_rows[[c for c in detail_cols if c in agent_rows.columns]], 3), use_container_width=True, hide_index=True)
+        st.dataframe(round_numeric_columns(agent_rows[[c for c in detail_cols if c in agent_rows.columns]], 3), width="stretch", hide_index=True)
     else:
         st.info("缺少 agent_states_by_round.csv 或必要字段，无法展示 Agent 状态轨迹。")
         selected_agent = None
@@ -609,7 +603,7 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
                 rows["source_reaction_text"] = rows["source_reaction_text"].map(lambda value: truncate_text(value, 120))
             if "target_reaction_text" in rows.columns:
                 rows["target_reaction_text"] = rows["target_reaction_text"].map(lambda value: truncate_text(value, 120))
-            st.dataframe(round_numeric_columns(rows[[c for c in columns if c in rows.columns]], 3), use_container_width=True, hide_index=True)
+            st.dataframe(round_numeric_columns(rows[[c for c in columns if c in rows.columns]], 3), width="stretch", hide_index=True)
     else:
         st.info("缺少 interactions.csv 或必要字段，无法展示邻居影响明细。")
 
