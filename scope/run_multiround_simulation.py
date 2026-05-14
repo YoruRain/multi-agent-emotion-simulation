@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42, help="Seed for agent sampling and participation decisions.")
     parser.add_argument("--use-llm", type=_parse_bool, default=False, help="Use LLM calls for budgeted active agents.")
     parser.add_argument("--max-llm-agents-per-round", type=int, default=None, help="Max LLM calls per round; omitted means all active agents.")
-    parser.add_argument("--llm-concurrency", type=int, default=3, help="Max concurrent LLM calls inside one round.")
+    parser.add_argument("--llm-concurrency", type=int, default=5, help="Max concurrent LLM calls inside one round.")
     parser.add_argument("--model-name", default=None, help="Override MODEL_NAME for LLM calls.")
     parser.add_argument("--base-url", default=None, help="Override BASE_URL for LLM calls.")
     parser.add_argument("--enable-interactions", action="store_true", help="Enable KOL-first interaction recording.")
