@@ -43,7 +43,6 @@ from simulation_network import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DOCUMENTED_OUTPUT_DIR = PROJECT_ROOT / "scope" / "outputs" / "simulation" / "multiround"
 CLI_CURRENT_OUTPUT_DIR = PROJECT_ROOT / "scope" / "data" / "outputs" / "simulation" / "multiround"
 CLI_SCRIPT = PROJECT_ROOT / "scope" / "run_multiround_simulation.py"
 
@@ -75,9 +74,7 @@ def project_relative(path: Path | None) -> str:
 def initial_output_dir() -> Path:
     if "output_base_dir" in st.session_state:
         return Path(st.session_state["output_base_dir"])
-    documented_runs = list_simulation_runs(DOCUMENTED_OUTPUT_DIR)
-    current_runs = list_simulation_runs(CLI_CURRENT_OUTPUT_DIR)
-    return DOCUMENTED_OUTPUT_DIR if documented_runs or not current_runs else CLI_CURRENT_OUTPUT_DIR
+    return CLI_CURRENT_OUTPUT_DIR
 
 
 def load_run(run_dir: Path | None) -> RunData:
@@ -244,12 +241,6 @@ def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | Non
         st.session_state["output_base_dir"] = str(new_base)
         st.session_state.pop("selected_run_dir", None)
         st.rerun()
-
-    if base_dir == CLI_CURRENT_OUTPUT_DIR and base_dir != DOCUMENTED_OUTPUT_DIR:
-        st.info(
-            "已检测到当前项目已有结果位于 scope/data/outputs/simulation/multiround。"
-            "如需完全按文档目录运行，可将上方路径改为 scope/outputs/simulation/multiround。"
-        )
 
     if runs:
         run_labels = [path.name for path in runs]

@@ -24,7 +24,7 @@ from simulation.single_event_simulator import (  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a single-event AgentScope Weibo user simulation.")
-    parser.add_argument("--event-id", required=True, help="Target event_id in data/scope/events.jsonl.")
+    parser.add_argument("--event-id", required=True, help="Target event_id in scope/data/inputs/events.jsonl.")
     parser.add_argument("--max-agents", type=int, default=None, help="Run at most N agents after filtering.")
     parser.add_argument("--memory-user-level", default=None, help="Optional memory_user_level filter, e.g. core.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
