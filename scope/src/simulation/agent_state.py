@@ -154,9 +154,9 @@ def _estimate_activity(memory_user_level: str, propagation_role: str) -> float:
 
 def _estimate_initial_stance(behavior: dict[str, Any], event: dict[str, Any]) -> float:
     dominant_stance = _safe_text(event.get("dominant_stance_label")).lower()
-    if dominant_stance in {"joy", "sympathy", "admiration"}:
+    if dominant_stance == "favor":
         bias = 0.2
-    elif dominant_stance in {"anger", "sadness", "fear", "disgust", "disappointment", "confusion"}:
+    elif dominant_stance == "against":
         bias = -0.2
     else:
         return 0.0
