@@ -35,10 +35,12 @@ from simulation_dashboard_utils import (
     value_count_frame,
 )
 from simulation_network import (
+    build_network_view_graph,
     compute_centrality_table,
     graph_overview,
     prepare_comment_table,
     render_pyvis_network,
+    role_color_legend_html,
 )
 
 
@@ -106,6 +108,31 @@ def metric_card(label: str, value: Any) -> None:
     if isinstance(value, float):
         value = safe_round(value, 3)
     st.metric(label, "暂无" if value is None or value == "" else value)
+
+
+def apply_dashboard_styles() -> None:
+    st.markdown(
+        """
+<style>
+div[data-testid="stTextInput"] input:disabled,
+div[data-testid="stTextArea"] textarea:disabled {
+    color: #111827;
+    -webkit-text-fill-color: #111827;
+    background-color: #ffffff;
+    border-color: #d0d7de;
+    opacity: 1;
+    cursor: default;
+}
+
+div[data-testid="stTextInput"] input:disabled:focus,
+div[data-testid="stTextArea"] textarea:disabled:focus {
+    border-color: #9aa4b2;
+    box-shadow: 0 0 0 1px #9aa4b2;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def show_file_status(data: RunData) -> None:
@@ -445,7 +472,7 @@ def tab_dynamics(data: RunData, show_round_zero: bool) -> None:
     st.info("polarization_score 表示立场分布离散程度；agents_affected_by_neighbors 表示每轮受到互动边影响的 Agent 数。")
 
 
-def tab_network(data: RunData, top_k: int, max_edges: int) -> None:
+def tab_network(data: RunData, top_k: int) -> None:
     st.subheader("互动网络与关键节点")
     graph = data.graph
     overview = graph_overview(graph)
@@ -459,6 +486,22 @@ def tab_network(data: RunData, top_k: int, max_edges: int) -> None:
         st.warning("暂无网络数据。")
 
     centrality = compute_centrality_table(graph, data.agents, data.states)
+
+    st.subheader("网络图展示控制")
+    control_cols = st.columns(3)
+    with control_cols[0]:
+        view_mode = st.selectbox("网络视图模式", ["全局简化图", "关键节点子图", "单个 Agent Ego 网络"])
+        edge_metric = st.selectbox("边筛选依据", ["weight_sum", "interaction_count", "weight"])
+    with control_cols[1]:
+        max_edges = st.number_input("最大显示边数", min_value=20, max_value=300, value=80, step=10)
+        node_size_metric = st.selectbox("节点大小依据", ["pagerank", "influence_score", "in_degree", "out_degree"])
+    with control_cols[2]:
+        label_top_k = st.number_input("显示标签的关键节点数", min_value=0, max_value=30, value=10, step=1)
+        center_agent_id = None
+        if view_mode == "单个 Agent Ego 网络" and graph is not None and graph.number_of_nodes():
+            agent_ids = sorted(str(node) for node in graph.nodes)
+            center_agent_id = st.selectbox("Ego 网络中心 agent_id", agent_ids)
+
     if not centrality.empty:
         display_cols = [
             "agent_id",
@@ -479,9 +522,28 @@ def tab_network(data: RunData, top_k: int, max_edges: int) -> None:
         st.info("无法计算中心性指标，可能是网络为空。")
 
     if graph is not None and graph.number_of_nodes():
-        ok, error = render_pyvis_network(graph, centrality, max_edges=max_edges)
-        if not ok:
-            st.warning(error)
+        view_graph, view_error = build_network_view_graph(
+            graph,
+            centrality,
+            view_mode,
+            int(top_k),
+            center_agent_id=center_agent_id,
+        )
+        if view_error:
+            st.warning(view_error)
+        if view_graph is not None and view_graph.number_of_nodes():
+            ok, error = render_pyvis_network(
+                view_graph,
+                centrality,
+                max_edges=int(max_edges),
+                edge_metric=edge_metric,
+                node_size_metric=node_size_metric,
+                label_top_k=int(label_top_k),
+            )
+            if not ok:
+                st.warning(error)
+            st.markdown(role_color_legend_html(), unsafe_allow_html=True)
+            st.caption("节点大小表示所选中心性或影响力指标，节点颜色表示传播角色，边宽表示互动强度。为避免视觉拥挤，图中默认仅展示高权重互动边。")
 
     st.subheader("互动边统计")
     metrics = data.metrics
@@ -601,13 +663,13 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="多智能体群体情绪演化仿真面板", layout="wide")
+    apply_dashboard_styles()
     st.title("多智能体群体情绪演化仿真面板")
 
     with st.sidebar:
         st.header("展示控制")
         show_round_zero = st.checkbox("显示第 0 轮", value=True)
         top_k = st.number_input("关键节点 Top K", min_value=3, max_value=50, value=10, step=1)
-        max_edges = st.number_input("PyVis 最大边数", min_value=10, max_value=1000, value=100, step=10)
         comment_limit = st.number_input("每轮默认评论数", min_value=5, max_value=200, value=30, step=5)
 
     base_dir = initial_output_dir()
@@ -633,7 +695,7 @@ def main() -> None:
     with tabs[3]:
         tab_dynamics(data, bool(show_round_zero))
     with tabs[4]:
-        tab_network(data, int(top_k), int(max_edges))
+        tab_network(data, int(top_k))
     with tabs[5]:
         tab_comments(data, int(comment_limit))
 

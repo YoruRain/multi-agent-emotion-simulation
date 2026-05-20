@@ -259,11 +259,13 @@ def build_graph_from_interactions(interactions: pd.DataFrame, agents: pd.DataFra
             edge = graph[source][target]
             edge["weight_sum"] = round(float(edge.get("weight_sum", 0.0)) + float(weight), 4)
             edge["interaction_count"] = int(edge.get("interaction_count", 0)) + 1
+            edge["first_round"] = min(int(edge.get("first_round", round_id)), round_id)
             edge["last_round"] = max(int(edge.get("last_round", round_id)), round_id)
             edge["weight"] = round(edge["weight_sum"] / edge["interaction_count"], 4)
             types = set(str(edge.get("interaction_types", "")).split(","))
             types.add(interaction_type)
             edge["interaction_types"] = ",".join(sorted(token for token in types if token))
+            edge["interaction_type"] = edge["interaction_types"]
         else:
             graph.add_edge(
                 source,
@@ -273,6 +275,7 @@ def build_graph_from_interactions(interactions: pd.DataFrame, agents: pd.DataFra
                 interaction_count=1,
                 first_round=round_id,
                 last_round=round_id,
+                interaction_type=interaction_type,
                 interaction_types=interaction_type,
             )
     return graph
