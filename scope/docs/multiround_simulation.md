@@ -283,7 +283,7 @@ conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py 
 ```powershell
 conda run -p D:\GraduationProject\.gp python scope\run_multiround_simulation.py `
   --event-id event_5194986460286423 `
-  --max-agents 5 `
+  --max-agents 30 `
   --rounds 5 `
   --use-llm true `
   --seed 42 `
