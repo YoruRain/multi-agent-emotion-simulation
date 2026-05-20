@@ -48,6 +48,157 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CLI_CURRENT_OUTPUT_DIR = PROJECT_ROOT / "scope" / "data" / "outputs" / "simulation" / "multiround"
 CLI_SCRIPT = PROJECT_ROOT / "scope" / "run_multiround_simulation.py"
 
+FIELD_LABELS = {
+    "agent_id": "智能体编号",
+    "user_id": "用户编号",
+    "memory_user_level": "用户分层",
+    "verified_type_name": "认证类型",
+    "propagation_role": "传播角色",
+    "influence_score": "影响力分数",
+    "susceptibility_score": "易感性分数",
+    "activity_score": "活跃度分数",
+    "emotion_score": "情绪分数",
+    "stance_score": "立场分数",
+    "emotion_label": "情绪标签",
+    "stance_label": "立场标签",
+    "pagerank": "页面排名中心性",
+    "degree_centrality": "度中心性",
+    "in_degree_centrality": "入度中心性",
+    "out_degree_centrality": "出度中心性",
+    "in_degree": "入度",
+    "out_degree": "出度",
+    "betweenness_centrality": "中介中心性",
+    "final_emotion_score": "最终情绪分数",
+    "final_stance_score": "最终立场分数",
+    "round_id": "轮次",
+    "avg_emotion_score": "平均情绪分数",
+    "avg_stance_score": "平均立场分数",
+    "positive_ratio": "正向情绪比例",
+    "neutral_ratio": "中性情绪比例",
+    "negative_ratio": "负向情绪比例",
+    "support_ratio": "支持比例",
+    "neutral_stance_ratio": "中立立场比例",
+    "oppose_ratio": "反对比例",
+    "emotion_volatility": "情绪波动",
+    "stance_volatility": "立场波动",
+    "polarization_score": "极化程度",
+    "avg_abs_emotion_delta": "平均情绪变化幅度",
+    "avg_abs_stance_delta": "平均立场变化幅度",
+    "max_abs_emotion_delta": "最大情绪变化幅度",
+    "max_abs_stance_delta": "最大立场变化幅度",
+    "avg_neighbor_count": "平均邻居数量",
+    "agents_affected_by_neighbors": "受邻居影响的智能体数量",
+    "avg_neighbor_influence_weight": "平均邻居影响权重",
+    "interaction_count": "互动次数",
+    "avg_interaction_weight": "平均互动权重",
+    "high_influence_interaction_count": "高影响力互动次数",
+    "interaction_type": "互动类型",
+    "source_influence_score": "源智能体影响力分数",
+    "speaker_type": "发言者类型",
+    "action_type": "行动类型",
+    "emotion_intensity": "情绪强度",
+    "stance_intensity": "立场强度",
+    "reaction_text": "反应文本",
+    "context_comment_count": "上下文评论数",
+    "influenced_by_high_influence": "是否受高影响力节点影响",
+    "emotion_delta": "情绪变化量",
+    "stance_delta": "立场变化量",
+    "neighbor_count": "邻居数量",
+    "state_update_reason": "状态更新原因",
+    "target_agent_id": "目标智能体编号",
+    "source_agent_id": "源智能体编号",
+    "weight": "权重",
+    "source_reaction_text": "源反应文本",
+    "target_reaction_text": "目标反应文本",
+    "source_emotion_score": "源情绪分数",
+    "source_stance_score": "源立场分数",
+}
+
+FILE_LABELS = {
+    "dynamics_summary": "动态摘要",
+    "agent_initial_states": "智能体初始状态",
+    "agent_states_by_round": "智能体轮次状态",
+    "active_reactions": "活跃反应记录",
+    "interactions": "互动明细",
+    "network": "互动网络",
+    "round_metrics": "轮次指标",
+}
+
+VALUE_LABELS = {
+    "core": "核心用户",
+    "normal": "普通用户",
+    "background": "背景用户",
+    "none": "无互动",
+    "kol_first": "关键意见领袖优先",
+    "weight_sum": "累计权重",
+    "interaction_count": "互动次数",
+    "weight": "平均权重",
+    "pagerank": "页面排名中心性",
+    "influence_score": "影响力分数",
+    "in_degree": "入度",
+    "out_degree": "出度",
+    "same_round_context": "同轮上下文",
+    "reply": "回复",
+    "repost": "转发",
+    "influence_candidate": "候选影响边",
+    "kol_speaker": "关键意见领袖发言者",
+}
+
+
+def display_label(name: Any) -> str:
+    return FIELD_LABELS.get(str(name), VALUE_LABELS.get(str(name), str(name)))
+
+
+def display_value(value: Any) -> Any:
+    if value is None:
+        return value
+    try:
+        if pd.isna(value):
+            return value
+    except (TypeError, ValueError):
+        pass
+    if not isinstance(value, str):
+        return value
+    text = str(value)
+    if "," in text or "，" in text:
+        parts = [part.strip() for part in text.replace("，", ",").split(",") if part.strip()]
+        mapped = [VALUE_LABELS.get(part, part.replace("KOL", "关键意见领袖")) for part in parts]
+        return "，".join(mapped)
+    return VALUE_LABELS.get(text, text.replace("KOL", "关键意见领袖"))
+
+
+def localize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    result = df.rename(columns={column: display_label(column) for column in df.columns}).copy()
+    for column in result.select_dtypes(include=["object"]).columns:
+        result[column] = result[column].map(display_value)
+    return result
+
+
+def graph_source_label(source: str) -> str:
+    if source == "network.graphml":
+        return "图文件（network.graphml）"
+    if source == "interactions.csv 重建":
+        return "由互动明细重建（interactions.csv）"
+    return source
+
+
+def localize_plotly_figure(fig):
+    if fig is None:
+        return None
+    fig.for_each_trace(lambda trace: trace.update(name=display_label(trace.name)) if trace.name else None)
+    for trace in fig.data:
+        if hasattr(trace, "x") and trace.x is not None:
+            trace.x = [display_value(value) for value in trace.x]
+        if hasattr(trace, "y") and trace.y is not None and any(isinstance(value, str) for value in trace.y):
+            trace.y = [display_value(value) for value in trace.y]
+    x_title = getattr(fig.layout.xaxis.title, "text", None)
+    y_title = getattr(fig.layout.yaxis.title, "text", None)
+    if x_title:
+        fig.update_xaxes(title_text=display_label(x_title))
+    if y_title:
+        fig.update_yaxes(title_text=display_label(y_title))
+    return fig
+
 
 @dataclass
 class RunData:
@@ -150,6 +301,7 @@ def show_file_status(data: RunData) -> None:
         status_rows.append(
             {
                 "文件": key,
+                "文件内容": FILE_LABELS.get(key, key),
                 "读取状态": "已读取" if path and path.exists() else "缺失",
                 "实际文件名": path.name if path else "",
             }
@@ -216,7 +368,7 @@ def run_simulation(params: dict[str, Any]) -> None:
             "ok": False,
             "stdout": "",
             "stderr": str(exc),
-            "message": "启动 CLI 失败。",
+            "message": "启动命令行仿真失败。",
             "new_run_dir": "",
         }
         return
@@ -246,22 +398,22 @@ def show_run_output() -> None:
     else:
         st.error(result["message"])
     if result.get("new_run_dir"):
-        st.caption(f"识别到的 run 目录：{result['new_run_dir']}")
-    with st.expander("CLI stdout", expanded=False):
-        st.code(result.get("stdout", "") or "无 stdout")
-    with st.expander("CLI stderr", expanded=not result["ok"]):
-        st.code(result.get("stderr", "") or "无 stderr")
+        st.caption(f"识别到的运行结果目录：{result['new_run_dir']}")
+    with st.expander("命令行标准输出", expanded=False):
+        st.code(result.get("stdout", "") or "无标准输出")
+    with st.expander("命令行错误输出", expanded=not result["ok"]):
+        st.code(result.get("stderr", "") or "无错误输出")
 
 
 def render_chart(fig, missing_message: str) -> None:
     if fig is None:
         st.info(missing_message)
     else:
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(localize_plotly_figure(fig), width="stretch")
 
 
 def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | None, data: RunData) -> None:
-    st.subheader("结果目录与已有 run")
+    st.subheader("结果目录与已有运行结果")
     output_text = st.text_input("当前输出根目录", value=str(base_dir))
     new_base = Path(output_text)
     if new_base != base_dir:
@@ -277,13 +429,13 @@ def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | Non
                 if path.resolve() == selected_run.resolve():
                     selected_index = index
                     break
-        chosen = st.selectbox("已有 run 选择", run_labels, index=selected_index)
+        chosen = st.selectbox("已有运行结果选择", run_labels, index=selected_index)
         chosen_path = base_dir / chosen
         if str(chosen_path) != st.session_state.get("selected_run_dir"):
             st.session_state["selected_run_dir"] = str(chosen_path)
             st.rerun()
     else:
-        st.warning("当前输出根目录下还没有可展示的 run。可以先运行新仿真，或切换到已有结果目录。")
+        st.warning("当前输出根目录下还没有可展示的运行结果。可以先运行新仿真，或切换到已有结果目录。")
 
     st.subheader("文件读取状态")
     show_file_status(data)
@@ -291,26 +443,26 @@ def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | Non
     st.subheader("运行新仿真")
     col1, col2, col3 = st.columns(3)
     with col1:
-        event_id = st.text_input("event_id", value="event_5194986460286423")
-        max_agents = st.number_input("max_agents", min_value=5, max_value=200, value=10, step=1)
+        event_id = st.text_input("事件编号", value="event_5194986460286423", key="run_event_id")
+        max_agents = st.number_input("最大智能体数量", min_value=5, max_value=200, value=10, step=1)
     with col2:
-        rounds = st.number_input("rounds", min_value=1, max_value=20, value=5, step=1)
-        seed = st.number_input("seed", value=42, step=1)
+        rounds = st.number_input("仿真轮数", min_value=1, max_value=20, value=5, step=1)
+        seed = st.number_input("随机种子", value=42, step=1)
     with col3:
-        use_llm = st.checkbox("use_llm", value=True)
-        enable_interactions = st.checkbox("enable_interactions", value=True)
+        use_llm = st.checkbox("启用大模型生成", value=True)
+        enable_interactions = st.checkbox("启用智能体互动", value=True)
 
     with st.expander("高级运行参数", expanded=True):
         col4, col5, col6 = st.columns(3)
         with col4:
-            interaction_mode = st.selectbox("interaction_mode", ["none", "kol_first"], index=1)
-            kol_speaker_limit = st.number_input("kol_speaker_limit", min_value=1, max_value=20, value=5, step=1)
+            interaction_mode = st.selectbox("互动模式", ["none", "kol_first"], index=1, format_func=display_label)
+            kol_speaker_limit = st.number_input("关键意见领袖发言上限", min_value=1, max_value=20, value=5, step=1)
         with col5:
-            top_k_context_comments = st.number_input("top_k_context_comments", min_value=1, max_value=10, value=3, step=1)
-            enable_emotion_dynamics = st.checkbox("enable_emotion_dynamics", value=True)
+            top_k_context_comments = st.number_input("上下文评论数量上限", min_value=1, max_value=10, value=3, step=1)
+            enable_emotion_dynamics = st.checkbox("启用情绪动态更新", value=True)
         with col6:
-            timeout = st.number_input("timeout 秒数", min_value=30, max_value=3600, value=300, step=30)
-            auto_select_latest = st.checkbox("运行后自动切换到最新 run", value=True)
+            timeout = st.number_input("超时时间（秒）", min_value=30, max_value=3600, value=300, step=30)
+            auto_select_latest = st.checkbox("运行后自动切换到最新结果", value=True)
 
     params = {
         "event_id": event_id,
@@ -327,7 +479,7 @@ def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | Non
         "output_base_dir": base_dir,
         "auto_select_latest": auto_select_latest,
     }
-    st.caption("将通过 subprocess.run 调用 scope/run_multiround_simulation.py，不会在页面启动时自动运行。")
+    st.caption("将通过子进程调用 scope/run_multiround_simulation.py，不会在页面启动时自动运行。")
     if st.button("运行仿真", type="primary"):
         run_simulation(params)
         st.rerun()
@@ -337,7 +489,7 @@ def tab_run_selection(base_dir: Path, runs: list[Path], selected_run: Path | Non
 def tab_overview(run_dir: Path | None, data: RunData) -> None:
     st.subheader("仿真运行概览")
     if run_dir is None:
-        st.warning("尚未选择 run。")
+        st.warning("尚未选择运行结果。")
         return
     summary = data.summary
     metrics = data.metrics
@@ -347,16 +499,16 @@ def tab_overview(run_dir: Path | None, data: RunData) -> None:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.text_input("事件 ID", value=str(event_id or "暂无"), disabled=True)
+        st.text_input("事件编号", value=str(event_id or "暂无"), disabled=True, key="overview_event_id")
     with col2:
-        st.text_input("话题", value=str(topic or "暂无"), disabled=True)
+        st.text_input("话题", value=str(topic or "暂无"), disabled=True, key="overview_topic")
 
-    st.text_area("事件背景", value=str(event_context or "暂无"), height=120, disabled=True)
+    st.text_area("事件背景", value=str(event_context or "暂无"), height=120, disabled=True, key="overview_event_context")
 
     overview_items = [
         ("动态演化", summary.get("dynamics_enabled", metric_value(summary, metrics, "dynamics_enabled", ""))),
         ("互动启用", summary.get("interaction_enabled", data.config.get("enable_interactions", ""))),
-        ("Agent 数量", summary.get("total_agents", len(data.agents))),
+        ("智能体数量", summary.get("total_agents", len(data.agents))),
         ("仿真轮数", summary.get("rounds", metric_value(summary, metrics, "round_id", ""))),
     ]
     rows = st.columns(4)
@@ -364,27 +516,27 @@ def tab_overview(run_dir: Path | None, data: RunData) -> None:
         with rows[index]:
             metric_card(label, value)
 
-    st.info("本次仿真以热点事件为输入，初始化一批微博用户 Agent，在多轮评论区互动中模拟高影响力用户先发声、普通用户观察并响应，以及由互动边驱动的情绪传染与立场演化。")
-    with st.expander("dynamics_summary 原始 JSON"):
+    st.info("本次仿真以热点事件为输入，初始化一批微博用户智能体，在多轮评论区互动中模拟高影响力用户先发声、普通用户观察并响应，以及由互动边驱动的情绪传染与立场演化。")
+    with st.expander("动态摘要原始数据"):
         st.json(summary or {})
 
 
 def tab_agent_profile(data: RunData) -> None:
-    st.subheader("Agent 群体画像")
+    st.subheader("智能体群体画像")
     agents = data.agents
     if agents.empty:
-        st.warning("缺少 agent_initial_states 数据，无法展示 Agent 群体画像。")
+        st.warning("缺少智能体初始状态数据，无法展示智能体群体画像。")
         return
-    st.caption("Agent 由用户画像映射而来，不是随机节点。")
+    st.caption("智能体由用户画像映射而来，不是随机节点。")
     level_counts = agents.get("memory_user_level", pd.Series(dtype=str)).fillna("未知").value_counts()
     metrics = [
-        ("总 Agent 数", len(agents)),
-        ("core 数量", int(level_counts.get("core", 0))),
-        ("normal 数量", int(level_counts.get("normal", 0))),
-        ("background 数量", int(level_counts.get("background", 0))),
-        ("平均 influence_score", safe_round(pd.to_numeric(agents.get("influence_score"), errors="coerce").mean(), 3)),
-        ("平均 susceptibility_score", safe_round(pd.to_numeric(agents.get("susceptibility_score"), errors="coerce").mean(), 3)),
-        ("平均 activity_score", safe_round(pd.to_numeric(agents.get("activity_score"), errors="coerce").mean(), 3)),
+        ("智能体总数", len(agents)),
+        ("核心用户数量", int(level_counts.get("core", 0))),
+        ("普通用户数量", int(level_counts.get("normal", 0))),
+        ("背景用户数量", int(level_counts.get("background", 0))),
+        ("平均影响力分数", safe_round(pd.to_numeric(agents.get("influence_score"), errors="coerce").mean(), 3)),
+        ("平均易感性分数", safe_round(pd.to_numeric(agents.get("susceptibility_score"), errors="coerce").mean(), 3)),
+        ("平均活跃度分数", safe_round(pd.to_numeric(agents.get("activity_score"), errors="coerce").mean(), 3)),
     ]
     cols = st.columns(4)
     for index, (label, value) in enumerate(metrics):
@@ -393,33 +545,33 @@ def tab_agent_profile(data: RunData) -> None:
 
     chart_cols = st.columns(2)
     categorical = [
-        ("memory_user_level", "memory_user_level 分布"),
-        ("verified_type_name", "verified_type_name 分布"),
+        ("memory_user_level", "用户分层分布"),
+        ("verified_type_name", "认证类型分布"),
     ]
     for index, (column, title) in enumerate(categorical):
         with chart_cols[index % 2]:
             if column in agents.columns:
                 fig = plot_bar(value_count_frame(agents[column], column), column, "数量", title)
-                render_chart(fig, f"缺少字段 {column}，跳过图表。")
+                render_chart(fig, f"缺少字段“{display_label(column)}”，跳过图表。")
             else:
-                st.info(f"缺少字段 {column}，跳过图表。")
+                st.info(f"缺少字段“{display_label(column)}”，跳过图表。")
     if "propagation_role" in agents.columns:
-        render_chart(plot_bar(explode_roles(agents["propagation_role"]), "propagation_role", "数量", "propagation_role 分布"), "缺少 propagation_role。")
+        render_chart(plot_bar(explode_roles(agents["propagation_role"]), "propagation_role", "数量", "传播角色分布"), "缺少传播角色。")
     else:
-        st.info("缺少字段 propagation_role，跳过角色分布。")
+        st.info("缺少字段“传播角色”，跳过角色分布。")
 
     numeric_columns = [
-        ("influence_score", "influence_score 直方图"),
-        ("susceptibility_score", "susceptibility_score 直方图"),
-        ("activity_score", "activity_score 直方图"),
-        ("emotion_score", "初始 emotion_score 分布"),
-        ("stance_score", "初始 stance_score 分布"),
+        ("influence_score", "影响力分数直方图"),
+        ("susceptibility_score", "易感性分数直方图"),
+        ("activity_score", "活跃度分数直方图"),
+        ("emotion_score", "初始情绪分数分布"),
+        ("stance_score", "初始立场分数分布"),
     ]
     for start in range(0, len(numeric_columns), 2):
         cols = st.columns(2)
         for offset, (column, title) in enumerate(numeric_columns[start : start + 2]):
             with cols[offset]:
-                render_chart(plot_histogram(agents, column, title), f"缺少字段 {column}，跳过图表。")
+                render_chart(plot_histogram(agents, column, title), f"缺少字段“{display_label(column)}”，跳过图表。")
 
     table_cols = [
         "agent_id",
@@ -436,14 +588,14 @@ def tab_agent_profile(data: RunData) -> None:
         "stance_label",
     ]
     existing = [column for column in table_cols if column in agents.columns]
-    st.dataframe(round_numeric_columns(agents[existing].copy(), 3), width="stretch", hide_index=True)
+    st.dataframe(localize_dataframe(round_numeric_columns(agents[existing].copy(), 3)), width="stretch", hide_index=True)
 
 
 def tab_dynamics(data: RunData, show_round_zero: bool) -> None:
     st.subheader("情绪与立场演化")
     metrics = data.metrics.copy()
     if metrics.empty:
-        st.warning("缺少 round_metrics 数据，无法展示演化趋势。")
+        st.warning("缺少轮次指标数据，无法展示演化趋势。")
         return
     if not show_round_zero and "round_id" in metrics.columns:
         metrics = coerce_numeric(metrics, ["round_id"])
@@ -451,9 +603,9 @@ def tab_dynamics(data: RunData, show_round_zero: bool) -> None:
     st.caption("情绪分数范围为 [-1, 1]，越低表示越偏负向；立场分数范围为 [-1, 1]，越低表示越偏反对，越高表示越偏支持。")
     cols = st.columns(2)
     with cols[0]:
-        render_chart(plot_line(metrics, "round_id", "avg_emotion_score", "群体平均情绪随轮次变化"), "缺少 avg_emotion_score 或 round_id。")
+        render_chart(plot_line(metrics, "round_id", "avg_emotion_score", "群体平均情绪随轮次变化"), "缺少平均情绪分数或轮次。")
     with cols[1]:
-        render_chart(plot_line(metrics, "round_id", "avg_stance_score", "群体平均立场随轮次变化"), "缺少 avg_stance_score 或 round_id。")
+        render_chart(plot_line(metrics, "round_id", "avg_stance_score", "群体平均立场随轮次变化"), "缺少平均立场分数或轮次。")
     cols = st.columns(2)
     with cols[0]:
         render_chart(plot_stacked_ratios(metrics, "round_id", ["positive_ratio", "neutral_ratio", "negative_ratio"], "情绪分布变化"), "缺少情绪比例字段。")
@@ -469,7 +621,7 @@ def tab_dynamics(data: RunData, show_round_zero: bool) -> None:
     for columns, title in optional_groups:
         fig = plot_multi_line(metrics, "round_id", columns, title)
         render_chart(fig, f"字段不足，跳过“{title}”。")
-    st.info("polarization_score 表示立场分布离散程度；agents_affected_by_neighbors 表示每轮受到互动边影响的 Agent 数。")
+    st.info("极化程度表示立场分布离散程度；受邻居影响的智能体数量表示每轮受到互动边影响的智能体数。")
 
 
 def tab_network(data: RunData, top_k: int) -> None:
@@ -481,7 +633,7 @@ def tab_network(data: RunData, top_k: int) -> None:
         for index, (label, value) in enumerate(overview.items()):
             with cols[index % 4]:
                 metric_card(label, value)
-        st.caption(f"网络数据来源：{data.graph_source}")
+        st.caption(f"网络数据来源：{graph_source_label(data.graph_source)}")
     else:
         st.warning("暂无网络数据。")
 
@@ -490,17 +642,17 @@ def tab_network(data: RunData, top_k: int) -> None:
     st.subheader("网络图展示控制")
     control_cols = st.columns(3)
     with control_cols[0]:
-        view_mode = st.selectbox("网络视图模式", ["全局简化图", "关键节点子图", "单个 Agent Ego 网络"])
-        edge_metric = st.selectbox("边筛选依据", ["weight_sum", "interaction_count", "weight"])
+        view_mode = st.selectbox("网络视图模式", ["全局简化图", "关键节点子图", "单个智能体邻域网络"])
+        edge_metric = st.selectbox("边筛选依据", ["weight_sum", "interaction_count", "weight"], format_func=display_label)
     with control_cols[1]:
         max_edges = st.number_input("最大显示边数", min_value=20, max_value=300, value=80, step=10)
-        node_size_metric = st.selectbox("节点大小依据", ["pagerank", "influence_score", "in_degree", "out_degree"])
+        node_size_metric = st.selectbox("节点大小依据", ["pagerank", "influence_score", "in_degree", "out_degree"], format_func=display_label)
     with control_cols[2]:
         label_top_k = st.number_input("显示标签的关键节点数", min_value=0, max_value=30, value=10, step=1)
         center_agent_id = None
-        if view_mode == "单个 Agent Ego 网络" and graph is not None and graph.number_of_nodes():
+        if view_mode == "单个智能体邻域网络" and graph is not None and graph.number_of_nodes():
             agent_ids = sorted(str(node) for node in graph.nodes)
-            center_agent_id = st.selectbox("Ego 网络中心 agent_id", agent_ids)
+            center_agent_id = st.selectbox("邻域网络中心智能体编号", agent_ids)
 
     if not centrality.empty:
         display_cols = [
@@ -517,7 +669,7 @@ def tab_network(data: RunData, top_k: int) -> None:
             "final_stance_score",
         ]
         existing = [column for column in display_cols if column in centrality.columns]
-        st.dataframe(centrality[existing].head(top_k), width="stretch", hide_index=True)
+        st.dataframe(localize_dataframe(centrality[existing].head(top_k)), width="stretch", hide_index=True)
     else:
         st.info("无法计算中心性指标，可能是网络为空。")
 
@@ -550,19 +702,19 @@ def tab_network(data: RunData, top_k: int) -> None:
     interactions = data.interactions
     cols = st.columns(2)
     with cols[0]:
-        render_chart(plot_line(metrics, "round_id", "interaction_count", "每轮 interaction_count"), "缺少 interaction_count。")
+        render_chart(plot_line(metrics, "round_id", "interaction_count", "每轮互动次数"), "缺少互动次数。")
     with cols[1]:
-        render_chart(plot_line(metrics, "round_id", "avg_interaction_weight", "每轮 avg_interaction_weight"), "缺少 avg_interaction_weight。")
+        render_chart(plot_line(metrics, "round_id", "avg_interaction_weight", "每轮平均互动权重"), "缺少平均互动权重。")
     if not interactions.empty and "interaction_type" in interactions.columns:
-        fig = plot_bar(value_count_frame(interactions["interaction_type"], "interaction_type"), "interaction_type", "数量", "interaction_type 分布")
-        render_chart(fig, "缺少 interaction_type。")
+        fig = plot_bar(value_count_frame(interactions["interaction_type"], "interaction_type"), "interaction_type", "数量", "互动类型分布")
+        render_chart(fig, "缺少互动类型。")
     else:
-        st.info("缺少 interactions.csv 或 interaction_type，跳过互动类型分布。")
+        st.info("缺少互动明细或互动类型，跳过互动类型分布。")
     cols = st.columns(2)
     with cols[0]:
-        render_chart(plot_histogram(interactions, "source_influence_score", "source_influence_score 分布"), "缺少 source_influence_score。")
+        render_chart(plot_histogram(interactions, "source_influence_score", "源智能体影响力分数分布"), "缺少源智能体影响力分数。")
     with cols[1]:
-        render_chart(plot_line(metrics, "round_id", "high_influence_interaction_count", "high_influence_interaction_count 随轮次变化"), "缺少 high_influence_interaction_count。")
+        render_chart(plot_line(metrics, "round_id", "high_influence_interaction_count", "高影响力互动次数随轮次变化"), "缺少高影响力互动次数。")
 
 
 def tab_comments(data: RunData, comment_limit: int) -> None:
@@ -574,7 +726,7 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
     if not reactions.empty and "round_id" in reactions.columns:
         reactions = coerce_numeric(reactions, ["round_id"])
         rounds = sorted(int(value) for value in reactions["round_id"].dropna().unique())
-        selected_round = st.selectbox("评论流 round_id", rounds, index=0)
+        selected_round = st.selectbox("评论流轮次", rounds, index=0)
         round_reactions = reactions[reactions["round_id"] == selected_round].copy()
         if "speaker_type" in round_reactions.columns:
             kol_reactions = round_reactions[round_reactions["speaker_type"] == "kol_speaker"]
@@ -582,35 +734,35 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
         else:
             kol_reactions = pd.DataFrame()
             regular_reactions = round_reactions
-        st.markdown("**KOL speaker**")
+        st.markdown("**关键意见领袖发言者**")
         st.dataframe(
-            prepare_comment_table(kol_reactions, comment_limit),
+            localize_dataframe(prepare_comment_table(kol_reactions, comment_limit)),
             width="stretch",
             hide_index=True,
         )
-        st.markdown("**Regular agent**")
+        st.markdown("**普通智能体**")
         st.dataframe(
-            prepare_comment_table(regular_reactions, comment_limit),
+            localize_dataframe(prepare_comment_table(regular_reactions, comment_limit)),
             width="stretch",
             hide_index=True,
         )
         with st.expander("该轮完整评论表"):
-            st.dataframe(round_numeric_columns(round_reactions, 3), width="stretch", hide_index=True)
+            st.dataframe(localize_dataframe(round_numeric_columns(round_reactions, 3)), width="stretch", hide_index=True)
     else:
-        st.info("缺少 active_reactions.jsonl 或 round_id，无法展示评论流。")
+        st.info("缺少活跃反应数据或轮次，无法展示评论流。")
         selected_round = None
 
-    st.subheader("Agent 状态轨迹")
+    st.subheader("智能体状态轨迹")
     if has_columns(states, ["agent_id", "round_id"]):
         state_data = coerce_numeric(states, ["round_id", "emotion_score", "stance_score"])
         agent_ids = sorted(state_data["agent_id"].dropna().astype(str).unique())
-        selected_agent = st.selectbox("agent_id", agent_ids)
+        selected_agent = st.selectbox("智能体编号", agent_ids)
         agent_rows = state_data[state_data["agent_id"].astype(str) == selected_agent].sort_values("round_id")
         cols = st.columns(2)
         with cols[0]:
-            render_chart(plot_line(agent_rows, "round_id", "emotion_score", "emotion_score 轨迹"), "缺少 emotion_score。")
+            render_chart(plot_line(agent_rows, "round_id", "emotion_score", "情绪分数轨迹"), "缺少情绪分数。")
         with cols[1]:
-            render_chart(plot_line(agent_rows, "round_id", "stance_score", "stance_score 轨迹"), "缺少 stance_score。")
+            render_chart(plot_line(agent_rows, "round_id", "stance_score", "立场分数轨迹"), "缺少立场分数。")
         detail_cols = [
             "round_id",
             "emotion_score",
@@ -620,9 +772,9 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
             "neighbor_count",
             "state_update_reason",
         ]
-        st.dataframe(round_numeric_columns(agent_rows[[c for c in detail_cols if c in agent_rows.columns]], 3), width="stretch", hide_index=True)
+        st.dataframe(localize_dataframe(round_numeric_columns(agent_rows[[c for c in detail_cols if c in agent_rows.columns]], 3)), width="stretch", hide_index=True)
     else:
-        st.info("缺少 agent_states_by_round.csv 或必要字段，无法展示 Agent 状态轨迹。")
+        st.info("缺少智能体轮次状态数据或必要字段，无法展示智能体状态轨迹。")
         selected_agent = None
 
     st.subheader("邻居影响明细")
@@ -632,9 +784,9 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
         rounds = sorted(int(value) for value in interaction_data["round_id"].dropna().unique())
         col1, col2 = st.columns(2)
         with col1:
-            target_id = st.selectbox("target_agent_id", target_ids)
+            target_id = st.selectbox("目标智能体编号", target_ids)
         with col2:
-            neighbor_round = st.selectbox("邻居影响 round_id", rounds, index=0 if selected_round is None or selected_round not in rounds else rounds.index(selected_round))
+            neighbor_round = st.selectbox("邻居影响轮次", rounds, index=0 if selected_round is None or selected_round not in rounds else rounds.index(selected_round))
         rows = interaction_data[
             (interaction_data["target_agent_id"].astype(str) == target_id)
             & (interaction_data["round_id"] == neighbor_round)
@@ -650,15 +802,15 @@ def tab_comments(data: RunData, comment_limit: int) -> None:
             "source_influence_score",
         ]
         if rows.empty:
-            st.info("该 round 下没有找到指向该 Agent 的互动边。")
+            st.info("该轮次下没有找到指向该智能体的互动边。")
         else:
             if "source_reaction_text" in rows.columns:
                 rows["source_reaction_text"] = rows["source_reaction_text"].map(lambda value: truncate_text(value, 120))
             if "target_reaction_text" in rows.columns:
                 rows["target_reaction_text"] = rows["target_reaction_text"].map(lambda value: truncate_text(value, 120))
-            st.dataframe(round_numeric_columns(rows[[c for c in columns if c in rows.columns]], 3), width="stretch", hide_index=True)
+            st.dataframe(localize_dataframe(round_numeric_columns(rows[[c for c in columns if c in rows.columns]], 3)), width="stretch", hide_index=True)
     else:
-        st.info("缺少 interactions.csv 或必要字段，无法展示邻居影响明细。")
+        st.info("缺少互动明细或必要字段，无法展示邻居影响明细。")
 
 
 def main() -> None:
@@ -669,7 +821,7 @@ def main() -> None:
     with st.sidebar:
         st.header("展示控制")
         show_round_zero = st.checkbox("显示第 0 轮", value=True)
-        top_k = st.number_input("关键节点 Top K", min_value=3, max_value=50, value=10, step=1)
+        top_k = st.number_input("关键节点数量", min_value=3, max_value=50, value=10, step=1)
         comment_limit = st.number_input("每轮默认评论数", min_value=5, max_value=200, value=30, step=5)
 
     base_dir = initial_output_dir()
@@ -681,7 +833,7 @@ def main() -> None:
     tabs = st.tabs([
         "运行与结果选择",
         "仿真运行概览",
-        "Agent 群体画像",
+        "智能体群体画像",
         "情绪与立场演化",
         "互动网络与关键节点",
         "评论流与状态明细",
@@ -701,10 +853,10 @@ def main() -> None:
 
     st.divider()
     st.caption(
-        "运行命令：streamlit run scope/visualization/simulation_dashboard.py。"
-        "依赖：streamlit、pandas、plotly、networkx、pyvis。"
-        "启动后默认读取最新已有仿真结果；可选择已有 run，也可配置参数并点击运行仿真。"
-        "运行失败时在 CLI stdout / stderr 中查看错误；成功后会自动切换到识别到的新 run。"
+        "运行命令：使用可视化服务启动 scope/visualization/simulation_dashboard.py。"
+        "依赖：页面框架、数据处理、图表绘制、网络分析和交互网络图组件。"
+        "启动后默认读取最新已有仿真结果；可选择已有运行结果，也可配置参数并点击运行仿真。"
+        "运行失败时在命令行标准输出和错误输出中查看错误；成功后会自动切换到识别到的新运行结果。"
     )
 
 

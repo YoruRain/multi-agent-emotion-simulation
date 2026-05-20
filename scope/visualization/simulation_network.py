@@ -33,6 +33,10 @@ ROLE_COLORS = {
     "未知角色": "#cccccc",
 }
 
+ROLE_DISPLAY_LABELS = {
+    "KOL 敏感型用户": "关键意见领袖敏感型用户",
+}
+
 EDGE_COLORS = {
     "same_round_context": "#9dc3e6",
     "reply": "#4472c4",
@@ -42,6 +46,27 @@ EDGE_COLORS = {
 }
 
 EDGE_TYPE_PRIORITY = ["reply", "repost", "same_round_context", "influence_candidate"]
+
+EDGE_TYPE_LABELS = {
+    "same_round_context": "同轮上下文",
+    "reply": "回复",
+    "repost": "转发",
+    "influence_candidate": "候选影响边",
+}
+
+
+def display_role(role: Any) -> str:
+    text = str(role)
+    if "," in text or "，" in text:
+        parts = [part.strip() for part in text.replace("，", ",").split(",") if part.strip()]
+        return "，".join(ROLE_DISPLAY_LABELS.get(part, part) for part in parts)
+    return ROLE_DISPLAY_LABELS.get(text, text)
+
+
+def display_edge_types(edge_types: Any) -> str:
+    tokens = [token.strip() for token in str(edge_types).replace("，", ",").split(",") if token.strip()]
+    labels = [EDGE_TYPE_LABELS.get(token, token) for token in tokens]
+    return "，".join(labels) if labels else "未知"
 
 
 def get_primary_role(role_text: Any) -> str:
@@ -80,7 +105,7 @@ def role_color_legend_html() -> str:
         items.append(
             "<span style='display:inline-flex;align-items:center;gap:6px;margin:0 14px 8px 0;'>"
             f"<span style='width:12px;height:12px;border-radius:50%;background:{color};display:inline-block;'></span>"
-            f"<span>{html.escape(role)}</span>"
+            f"<span>{html.escape(display_role(role))}</span>"
             "</span>"
         )
     return (
@@ -295,11 +320,11 @@ def build_network_view_graph(
             return None, "无法识别关键节点，暂无可渲染子图。"
         return graph.subgraph(nodes_to_keep).copy(), None
 
-    if view_mode == "单个 Agent Ego 网络":
+    if view_mode == "单个智能体邻域网络":
         if not center_agent_id:
-            return None, "请选择用于 Ego 网络的 agent_id。"
+            return None, "请选择用于邻域网络的中心智能体编号。"
         if center_agent_id not in graph:
-            return None, f"Agent {center_agent_id} 不在当前网络中。"
+            return None, f"智能体 {center_agent_id} 不在当前网络中。"
         nodes_to_keep = {center_agent_id, *graph.predecessors(center_agent_id), *graph.successors(center_agent_id)}
         return graph.subgraph(nodes_to_keep).copy(), None
 
@@ -339,7 +364,7 @@ def render_pyvis_network(
     try:
         from pyvis.network import Network
     except Exception as exc:
-        return False, f"PyVis 不可用：{exc}"
+        return False, f"网络图渲染组件不可用：{exc}"
 
     if graph.number_of_nodes() == 0:
         return False, "网络为空，暂无可渲染节点。"
@@ -410,17 +435,17 @@ def render_pyvis_network(
             emotion = _node_value(graph, centrality_rows, node, "final_emotion_score", _node_attr(graph, node, "emotion_score", ""))
             stance = _node_value(graph, centrality_rows, node, "final_stance_score", _node_attr(graph, node, "stance_score", ""))
             title = (
-                f"agent_id: {node_id}<br>"
-                f"primary_role: {html.escape(primary_role)}<br>"
-                f"propagation_role: {html.escape(str(propagation_role or '未知角色'))}<br>"
-                f"memory_user_level: {_node_value(graph, centrality_rows, node, 'memory_user_level', '')}<br>"
-                f"influence_score: {safe_round(influence, 3) if influence is not None else ''}<br>"
-                f"susceptibility_score: {_node_value(graph, centrality_rows, node, 'susceptibility_score', '')}<br>"
-                f"pagerank: {_node_value(graph, centrality_rows, node, 'pagerank', '')}<br>"
-                f"in_degree: {_node_value(graph, centrality_rows, node, 'in_degree', '')}<br>"
-                f"out_degree: {_node_value(graph, centrality_rows, node, 'out_degree', '')}<br>"
-                f"final_emotion_score: {safe_round(emotion, 3)}<br>"
-                f"final_stance_score: {safe_round(stance, 3)}"
+                f"智能体编号: {node_id}<br>"
+                f"主要传播角色: {html.escape(display_role(primary_role))}<br>"
+                f"传播角色: {html.escape(display_role(propagation_role or '未知角色'))}<br>"
+                f"用户分层: {_node_value(graph, centrality_rows, node, 'memory_user_level', '')}<br>"
+                f"影响力分数: {safe_round(influence, 3) if influence is not None else ''}<br>"
+                f"易感性分数: {_node_value(graph, centrality_rows, node, 'susceptibility_score', '')}<br>"
+                f"页面排名中心性: {_node_value(graph, centrality_rows, node, 'pagerank', '')}<br>"
+                f"入度: {_node_value(graph, centrality_rows, node, 'in_degree', '')}<br>"
+                f"出度: {_node_value(graph, centrality_rows, node, 'out_degree', '')}<br>"
+                f"最终情绪分数: {safe_round(emotion, 3)}<br>"
+                f"最终立场分数: {safe_round(stance, 3)}"
             )
             label = short_agent_label(node_id) if node_id in labeled_nodes else " "
             font = {"size": 14} if node_id in labeled_nodes else {"size": 0}
@@ -435,13 +460,13 @@ def render_pyvis_network(
             count = _as_int(_edge_attr(attrs, "interaction_count", 1), 1) or 1
             edge_types = _edge_attr(attrs, "interaction_types", _edge_attr(attrs, "interaction_type", ""))
             title = (
-                f"source: {source_id}<br>"
-                f"target: {target_id}<br>"
-                f"interaction_count: {count}<br>"
-                f"weight_sum: {safe_round(weight_sum, 3)}<br>"
-                f"first_round: {_edge_attr(attrs, 'first_round', '')}<br>"
-                f"last_round: {_edge_attr(attrs, 'last_round', '')}<br>"
-                f"interaction_types: {edge_types}"
+                f"源智能体: {source_id}<br>"
+                f"目标智能体: {target_id}<br>"
+                f"互动次数: {count}<br>"
+                f"累计权重: {safe_round(weight_sum, 3)}<br>"
+                f"首次轮次: {_edge_attr(attrs, 'first_round', '')}<br>"
+                f"末次轮次: {_edge_attr(attrs, 'last_round', '')}<br>"
+                f"互动类型: {display_edge_types(edge_types)}"
             )
             edge_type = _edge_primary_type(attrs)
             net.add_edge(
@@ -458,7 +483,7 @@ def render_pyvis_network(
         st.iframe(network_html, height=height)
         return True, None
     except Exception as exc:
-        return False, f"PyVis 渲染失败：{exc}"
+        return False, f"网络图渲染失败：{exc}"
 
 
 def prepare_comment_table(df: pd.DataFrame, limit: int) -> pd.DataFrame:
