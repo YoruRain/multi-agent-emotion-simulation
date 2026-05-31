@@ -646,7 +646,12 @@ def tab_network(data: RunData, top_k: int) -> None:
         edge_metric = st.selectbox("边筛选依据", ["weight_sum", "interaction_count", "weight"], format_func=display_label)
     with control_cols[1]:
         max_edges = st.number_input("最大显示边数", min_value=20, max_value=300, value=80, step=10)
-        node_size_metric = st.selectbox("节点大小依据", ["pagerank", "influence_score", "in_degree", "out_degree"], format_func=display_label)
+        node_size_metric = st.selectbox(
+            "节点大小依据",
+            ["pagerank", "influence_score", "in_degree", "out_degree"],
+            index=1,
+            format_func=display_label,
+        )
     with control_cols[2]:
         label_top_k = st.number_input("显示标签的关键节点数", min_value=0, max_value=30, value=10, step=1)
         center_agent_id = None
