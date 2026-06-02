@@ -14,6 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib import font_manager
+from matplotlib.patches import Patch
 
 try:
     import seaborn as sns
@@ -206,9 +207,12 @@ def output_path(output_dir: Path, module_slug: str, file_slug: str, image_format
     return output_dir / module_slug / f"{file_slug}.{image_format}"
 
 
-def save_figure(fig: plt.Figure, path: Path, dpi: int) -> None:
+def save_figure(fig: plt.Figure, path: Path, dpi: int, bottom_margin: float | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout()
+    if bottom_margin is None:
+        fig.tight_layout()
+    else:
+        fig.tight_layout(rect=(0, bottom_margin, 1, 1))
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
@@ -252,7 +256,6 @@ def render_bar(df: pd.DataFrame, x_col: str, y_col: str, title: str, path: Path,
     fig, ax = plt.subplots(figsize=(8, 4.8))
     colors = palette(len(data))
     ax.bar(data[x_col].astype(str), data[y_col], color=colors)
-    ax.set_title(title, fontsize=15, pad=14)
     ax.set_xlabel(display_label(x_col))
     ax.set_ylabel("数量")
     ax.grid(axis="y", alpha=0.35)
@@ -275,7 +278,6 @@ def render_histogram(df: pd.DataFrame, column: str, title: str, path: Path, dpi:
         sns.histplot(data=data, x=column, bins=20, kde=True, color="#4c78a8", ax=ax)
     else:
         ax.hist(data[column], bins=20, color="#4c78a8", edgecolor="white", alpha=0.9)
-    ax.set_title(title, fontsize=15, pad=14)
     ax.set_xlabel(display_label(column))
     ax.set_ylabel("数量")
     ax.grid(axis="y", alpha=0.35)
@@ -292,7 +294,6 @@ def render_line(df: pd.DataFrame, x_col: str, y_col: str, title: str, path: Path
         return False
     fig, ax = plt.subplots(figsize=(8.4, 4.8))
     ax.plot(data[x_col], data[y_col], marker="o", linewidth=2.2, color="#4c78a8")
-    ax.set_title(title, fontsize=15, pad=14)
     ax.set_xlabel(display_label(x_col))
     ax.set_ylabel(display_label(y_col))
     ax.grid(alpha=0.35)
@@ -322,11 +323,82 @@ def render_multi_line(df: pd.DataFrame, x_col: str, y_cols: list[str], title: st
     if not plotted:
         plt.close(fig)
         return False
-    ax.set_title(title, fontsize=15, pad=14)
     ax.set_xlabel(display_label(x_col))
     ax.set_ylabel("指标值")
     ax.legend(loc="best", frameon=False)
     ax.grid(alpha=0.35)
+    save_figure(fig, path, dpi)
+    return True
+
+
+def render_interaction_scale_dual_axis(df: pd.DataFrame, title: str, path: Path, dpi: int) -> bool:
+    count_cols = ["interaction_count", "high_influence_interaction_count"]
+    weight_col = "avg_interaction_weight"
+    existing = [column for column in [*count_cols, weight_col] if column in df.columns]
+    if not has_columns(df, ["round_id"]) or not existing:
+        return False
+    data = coerce_numeric(df, ["round_id", *existing]).dropna(subset=["round_id"]).sort_values("round_id")
+    if data.empty:
+        return False
+
+    fig, left_ax = plt.subplots(figsize=(8.8, 5.0))
+    right_ax = left_ax.twinx()
+    colors = {
+        "interaction_count": "#4c78a8",
+        "high_influence_interaction_count": "#f58518",
+        "avg_interaction_weight": "#54a24b",
+    }
+    markers = {
+        "interaction_count": "o",
+        "high_influence_interaction_count": "^",
+    }
+    plotted = False
+    for column in count_cols:
+        if column not in data.columns:
+            continue
+        series = data[["round_id", column]].dropna()
+        if series.empty:
+            continue
+        left_ax.plot(
+            series["round_id"],
+            series[column],
+            marker=markers[column],
+            linewidth=2,
+            label=display_label(column),
+            color=colors[column],
+        )
+        plotted = True
+
+    if weight_col in data.columns:
+        weight_series = data[["round_id", weight_col]].dropna()
+        if not weight_series.empty:
+            right_ax.plot(
+                weight_series["round_id"],
+                weight_series[weight_col],
+                marker="s",
+                linewidth=2,
+                linestyle="--",
+                label=display_label(weight_col),
+                color=colors[weight_col],
+            )
+            plotted = True
+
+    if not plotted:
+        plt.close(fig)
+        return False
+
+    left_ax.set_xlabel(display_label("round_id"))
+    left_ax.set_ylabel("次数")
+    right_ax.set_ylabel("权重")
+    left_ax.grid(alpha=0.35)
+    right_ax.grid(False)
+    x_values = pd.to_numeric(data["round_id"], errors="coerce").dropna()
+    if not x_values.empty and ((x_values - x_values.round()).abs() < 1e-9).all():
+        left_ax.set_xticks(sorted(x_values.astype(int).unique()))
+
+    lines = left_ax.get_lines() + right_ax.get_lines()
+    labels = [line.get_label() for line in lines]
+    left_ax.legend(lines, labels, loc="best", frameon=False)
     save_figure(fig, path, dpi)
     return True
 
@@ -341,14 +413,36 @@ def render_stacked_ratio(df: pd.DataFrame, x_col: str, ratio_cols: list[str], ti
     fig, ax = plt.subplots(figsize=(8.8, 5.0))
     x = data[x_col].to_numpy()
     y_values = [data[column].fillna(0).to_numpy() for column in existing]
-    ax.stackplot(x, y_values, labels=[display_label(column) for column in existing], colors=palette(len(existing)), alpha=0.88)
-    ax.set_title(title, fontsize=15, pad=14)
+    hatches = ["///", "...", "\\\\\\", "xxx"]
+    colors = palette(len(existing))
+    areas = ax.stackplot(x, y_values, colors=colors, alpha=0.9)
+    legend_handles: list[Patch] = []
+    for index, (area, column) in enumerate(zip(areas, existing)):
+        hatch = hatches[index % len(hatches)]
+        area.set_hatch(hatch)
+        area.set_edgecolor("#111827")
+        area.set_linewidth(0.45)
+        legend_handles.append(
+            Patch(
+                facecolor=colors[index],
+                edgecolor="#111827",
+                hatch=hatch,
+                label=display_label(column),
+                linewidth=0.45,
+            )
+        )
     ax.set_xlabel(display_label(x_col))
     ax.set_ylabel("比例")
     ax.set_ylim(0, max(1.0, math.ceil(max(sum(values) for values in zip(*y_values)) * 10) / 10))
-    ax.legend(loc="upper left", frameon=False)
+    ax.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.14),
+        ncol=len(legend_handles),
+        frameon=False,
+    )
     ax.grid(alpha=0.35)
-    save_figure(fig, path, dpi)
+    save_figure(fig, path, dpi, bottom_margin=0.16)
     return True
 
 
@@ -379,7 +473,6 @@ def render_trajectory(
         mean_rows = data.groupby("round_id", as_index=False)[y_col].mean().sort_values("round_id")
         ax.plot(mean_rows["round_id"], mean_rows[y_col], marker="o", linewidth=2.6, color="#e45756", label="群体平均")
         ax.legend(loc="best", frameon=False)
-    ax.set_title(title, fontsize=15, pad=14)
     ax.set_xlabel(display_label("round_id"))
     ax.set_ylabel(display_label(y_col))
     ax.grid(alpha=0.35)
@@ -483,7 +576,7 @@ def build_chart_specs(agent_id: str | None = None) -> list[ChartSpec]:
             "emotion-stance-evolution",
             "interaction-scale-by-round",
             "每轮互动规模",
-            lambda data, path, fmt, dpi: render_multi_line(data.metrics, "round_id", ["interaction_count", "avg_interaction_weight", "high_influence_interaction_count"], "每轮互动规模", path, dpi),
+            lambda data, path, fmt, dpi: render_interaction_scale_dual_axis(data.metrics, "每轮互动规模", path, dpi),
         ),
         ChartSpec(
             "comment-flow-state-details",

@@ -129,7 +129,6 @@ def plot_score_trajectory(
         )
 
     ax.axhline(0, color="#6b7280", linewidth=1.0, linestyle="--", alpha=0.75)
-    ax.set_title(title, fontsize=16, pad=14)
     ax.set_xlabel("轮次", fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
     ax.grid(True, axis="both", linestyle="-", alpha=0.9)
